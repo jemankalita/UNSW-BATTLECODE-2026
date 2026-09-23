@@ -34,12 +34,13 @@ split policy); `main.cpp` is the per-turn decision loop.
 - **Sprint with purpose.** A sprint costs one segment per extra step, so it is
   only used to grab two pearls at once or to steal a contested pearl from an
   enemy.
-- **Split late.** A length-2 child is only split off once the parent is at
-  least length 12, and the team is capped at 6 / 10 / 16 dragons on small,
-  medium and large maps. Splitting early throws away the longest-dragon
-  tiebreak.
+- **Split late, and only with room.** A length-2 child is split off at length
+  12 on small and medium maps (length 8 on large ones), and only if the head
+  has three exits. Caps are 4 / 8 / 20 dragons. A child born in a pocket dies
+  on its first turn.
 - **Trade up, never down.** A short dragon will ram a clearly longer enemy
-  head. The team's last dragon never does — that death loses the game.
+  head. Longer dragons stay a tile away so they are not rammed. The last
+  dragon never invites a head-to-head.
 - **Talk by sonar.** Teammates broadcast pearl positions and enemy heads using
   a 64-bit packed message with a multiplicative checksum, so random enemy
   sonar is ignored.

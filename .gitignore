@@ -15,3 +15,8 @@ replays/
 
 # Local test binaries
 tests/*.exe
+
+# Local API dumps
+battles.json
+battle_detail.json
+submissions.json

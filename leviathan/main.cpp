@@ -56,36 +56,34 @@ class Brain {
         tail_known_ = static_cast<int>(body.size()) == length_ && length_ >= 2;
         if (tail_known_) {
             tail_ = body.back();
+            if (body.size() >= 2) {
+                tail_neck_ = body[body.size() - 2];
+                tail_neck_ok_ = true;
+            } else {
+                tail_neck_ok_ = false;
+            }
+        } else {
+            tail_neck_ok_ = false;
+        }
+
+        std::vector<Step> raw = safe_steps(ct, here_.x, here_.y, facing_, true);
+        std::vector<Step> safe = filter_steps(ct, raw, true);
+        if (safe.empty()) {
+            safe = filter_steps(ct, raw, false);
+        }
+        if (safe.empty()) {
+            safe = raw;
+        }
+
+        Step pearl = best_pearl_step(ct, safe);
+        if (pearl.dir >= 0 && !logic::refuse_eat(future_exits(ct, pearl))) {
+            commit(ct, pearl.dir, "eat");
+            return;
         }
 
         int kill = ram_dir(ct, false);
         if (kill >= 0) {
             commit(ct, kill, "ram");
-            return;
-        }
-
-        std::vector<Step> safe = safe_steps(ct, here_.x, here_.y, facing_, true);
-        int here_open = future_exits(ct, Step{facing_, logic::Point{here_.x, here_.y, true}, true});
-        std::vector<Step> roomy;
-        for (Step const& step : safe) {
-            int exits = future_exits(ct, step);
-            if (exits >= 2 || (exits >= 1 && here_open <= 1)) {
-                roomy.push_back(step);
-            }
-        }
-        if (roomy.empty()) {
-            for (Step const& step : safe) {
-                if (future_exits(ct, step) >= 1) {
-                    roomy.push_back(step);
-                }
-            }
-        }
-        if (!roomy.empty()) {
-            safe = std::move(roomy);
-        }
-        Step pearl = best_pearl_step(safe);
-        if (pearl.dir >= 0) {
-            commit(ct, pearl.dir, "eat");
             return;
         }
 
@@ -96,8 +94,9 @@ class Brain {
         }
 
         bool threatened = nearest_enemy_dist() <= 2;
-        if (logic::want_split(length_, allies_, width_, height_, round_, false, threatened) &&
-            ct.can_split(2)) {
+        bool pearl_here = pearl.dir >= 0;
+        if (logic::want_split(length_, allies_, width_, height_, round_, pearl_here, threatened) &&
+            ct.can_split(2) && split_is_safe(ct, raw)) {
             ct.do_split(2);
             ct.set_indicator_string("split");
             remember(here_.x, here_.y);
@@ -110,7 +109,7 @@ class Brain {
             return;
         }
 
-        int roam = pick_roam(safe, length_ >= 8);
+        int roam = pick_roam(safe, length_ >= 8 || nearest_enemy_dist() <= 3);
         if (roam >= 0) {
             commit(ct, roam, "roam");
             return;
@@ -144,7 +143,9 @@ class Brain {
     int facing_ = logic::DIR_N;
     unswbc::Position here_{};
     bool tail_known_ = false;
+    bool tail_neck_ok_ = false;
     logic::Point tail_{};
+    logic::Point tail_neck_{};
     std::vector<Cell> cells_;
     std::unordered_map<int, std::vector<logic::PortalSide>> portals_;
     std::vector<Head> enemy_heads_;
@@ -294,25 +295,31 @@ class Brain {
     }
 
     void speak(unswbc::Controller& ct) {
-        std::array<int, 4> sent = {};
-        int slot = 0;
+        int px = -1;
+        int py = -1;
+        int best = 1000000;
         for (unswbc::Tile const& tile : ct.get_tiles()) {
-            if (slot >= 3 || !tile.has_pearl()) {
+            if (!tile.has_pearl()) {
                 continue;
             }
             unswbc::Position position = tile.get_position();
-            send(ct, slot, logic::KIND_PEARL, position.x, position.y, 0);
-            sent[slot] = 1;
-            ++slot;
+            int dist = logic::chebyshev(here_.x, here_.y, position.x, position.y, width_, height_);
+            if (dist < best) {
+                best = dist;
+                px = position.x;
+                py = position.y;
+            }
         }
-        if (!enemy_heads_.empty()) {
-            Head const& head = enemy_heads_.front();
-            send(ct, 3, logic::KIND_ENEMY, head.x, head.y, head.len);
-            sent[3] = 1;
-        } else if (hint_x_ >= 0 && round_ - hint_round_ <= 15) {
-            send(ct, 3, logic::KIND_ENEMY, hint_x_, hint_y_, hint_len_);
+        for (int dir = 0; dir < 4; ++dir) {
+            if (!enemy_heads_.empty() && dir == 3) {
+                Head const& head = enemy_heads_.front();
+                send(ct, dir, logic::KIND_ENEMY, head.x, head.y, head.len);
+            } else if (px >= 0) {
+                send(ct, dir, logic::KIND_PEARL, px, py, 0);
+            } else if (hint_x_ >= 0 && round_ - hint_round_ <= 15) {
+                send(ct, dir, logic::KIND_ENEMY, hint_x_, hint_y_, hint_len_);
+            }
         }
-        (void)sent;
     }
 
     void send(unswbc::Controller& ct, int dir, int kind, int x, int y, int aux) {
@@ -345,10 +352,18 @@ class Brain {
         return body;
     }
 
+    // Strict for real moves: unseen edges are walls. Optimistic for BFS so we
+    // can path through fog toward remembered pearls (edge_blocked returns false
+    // when the edge has never been seen).
     logic::Point destination(int x, int y, int dir) {
+        return destination(x, y, dir, true);
+    }
+
+    logic::Point destination(int x, int y, int dir, bool strict) {
         Cell& cell = at(x, y);
-        // Unseen edges stay closed so a path cannot run through kelp we have not looked at.
-        if (!cell.edge_seen[dir] || cell.kelp[dir]) {
+        bool blocked_edge = strict ? (!cell.edge_seen[dir] || cell.kelp[dir])
+                                   : logic::edge_blocked(cell.edge_seen[dir], cell.kelp[dir]);
+        if (blocked_edge) {
             logic::Point blocked;
             blocked.ok = false;
             blocked.x = x;
@@ -427,7 +442,33 @@ class Brain {
         return false;
     }
 
-    Step best_pearl_step(std::vector<Step> const& safe) const {
+    bool near_enemy_head(int x, int y) const {
+        for (Head const& head : enemy_heads_) {
+            if (logic::chebyshev(x, y, head.x, head.y, width_, height_) != 1) {
+                continue;
+            }
+            if (logic::avoid_enemy_head(length_, head.len, allies_)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    std::vector<Step> filter_steps(unswbc::Controller& ct, std::vector<Step> const& raw, bool avoid_heads) {
+        std::vector<Step> out;
+        for (Step const& step : raw) {
+            if (avoid_heads && near_enemy_head(step.dest.x, step.dest.y)) {
+                continue;
+            }
+            if (future_exits(ct, step) < 1) {
+                continue;
+            }
+            out.push_back(step);
+        }
+        return out;
+    }
+
+    Step best_pearl_step(unswbc::Controller&, std::vector<Step> const& safe) const {
         Step best;
         best.dir = -1;
         int best_dist = 1000000;
@@ -513,9 +554,22 @@ class Brain {
                 if (tile->get_dragon() != nullptr && !freed_here) {
                     continue;
                 }
+                if (!escape && near_enemy_head(second.x, second.y)) {
+                    continue;
+                }
                 int pearls = (ate ? 1 : 0) + (tile->has_pearl() ? 1 : 0);
                 if (!escape && length_ < 4 && pearls < 2) {
                     continue;
+                }
+                // Same dead-end rule as one-step eats: never land on a pearl pocket.
+                if (pearls > 0) {
+                    Step landing;
+                    landing.dir = dir2;
+                    landing.dest = second;
+                    landing.pearl = tile->has_pearl();
+                    if (logic::refuse_eat(future_exits(ct, landing))) {
+                        continue;
+                    }
                 }
                 bool fight = pearls == 1 && contested(ct, second);
                 int score = logic::plan_score(pearls, 2, 2, 0, fight, escape);
@@ -603,7 +657,11 @@ class Brain {
             }
         }
         if (!cell.seen) {
-            return 10000 - dist * 10 + noise;
+            return 40000 - dist * 8 + noise;
+        }
+        int age = round_ - cell.seen_round;
+        if (age > 20) {
+            return 15000 - dist * 8 + noise;
         }
         return -1;
     }
@@ -643,14 +701,13 @@ class Brain {
                 if (current_dist == 0 && dir == logic::opposite_dir(facing_)) {
                     continue;
                 }
-                logic::Point next = destination(x, y, dir);
-                if (next.ok && current_dist == 0) {
-                    Cell const& next_cell = at(next.x, next.y);
-                    if (!next_cell.pearl && next_cell.spawn_round > round_) {
-                        continue;
-                    }
-                }
+                // First step is a real move (strict). Later steps may cross fog.
+                logic::Point next = destination(x, y, dir, current_dist == 0);
                 if (!next.ok) {
+                    continue;
+                }
+                if (current_dist == 0 && at(x, y).portal[dir] >= 0 &&
+                    ct.get_tile(unswbc::Position(next.x, next.y)) == nullptr) {
                     continue;
                 }
                 int next_index = index_of(next.x, next.y);
@@ -734,8 +791,8 @@ class Brain {
                 }
             }
             int wait = at(step.dest.x, step.dest.y).spawn_round - round_;
-            if (wait > 0 && wait <= 8) {
-                score -= 300;
+            if (wait >= 0 && wait <= 8) {
+                score += 250 - wait * 20;
             }
             if (score > best_score) {
                 best_score = score;
@@ -743,6 +800,43 @@ class Brain {
             }
         }
         return best_dir;
+    }
+
+    int dir_between(logic::Point from, logic::Point to) const {
+        for (int dir = 0; dir < 4; ++dir) {
+            logic::Point step = logic::step_wrap(from.x, from.y, dir, width_, height_);
+            if (step.x == to.x && step.y == to.y) {
+                return dir;
+            }
+        }
+        return -1;
+    }
+
+    bool split_is_safe(unswbc::Controller& ct, std::vector<Step> const& head_exits) {
+        if (static_cast<int>(head_exits.size()) < 3) {
+            return false;
+        }
+        // Without a traced tail we cannot count the child's neighbours, so skip.
+        if (!tail_known_ || !tail_neck_ok_) {
+            return false;
+        }
+        int parent = dir_between(tail_, tail_neck_);
+        int open = 0;
+        for (int dir = 0; dir < 4; ++dir) {
+            if (dir == parent) {
+                continue;
+            }
+            logic::Point next = destination(tail_.x, tail_.y, dir, true);
+            if (!next.ok) {
+                continue;
+            }
+            unswbc::Tile const* tile = ct.get_tile(unswbc::Position(next.x, next.y));
+            if (tile == nullptr || tile->get_dragon() != nullptr) {
+                continue;
+            }
+            ++open;
+        }
+        return logic::child_has_room(open);
     }
 
     int ram_dir(unswbc::Controller& ct, bool trapped) {

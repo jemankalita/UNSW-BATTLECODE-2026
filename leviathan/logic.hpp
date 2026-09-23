@@ -208,23 +208,53 @@ inline int plan_score(int pearls, int steps, int dist_before, int dist_after, bo
     return score;
 }
 
+inline bool edge_blocked(bool seen, bool kelp) {
+    return seen && kelp;
+}
+
+inline bool refuse_eat(int exits) {
+    return exits < 1;
+}
+
+// Longer dragons must not step next to a shorter enemy head: that enemy will ram.
+inline bool avoid_enemy_head(int self_len, int enemy_len, int allies) {
+    if (allies <= 1) {
+        return true;
+    }
+    return !worth_trade(self_len, enemy_len, allies);
+}
+
+inline int split_min_length(int width, int height) {
+    int area = width * height;
+    if (area <= 1500) {
+        return 12;
+    }
+    return 8;
+}
+
 inline int unit_cap(int width, int height) {
     int area = width * height;
     if (area <= 400) {
-        return 6;
+        return 4;
     }
     if (area <= 1500) {
-        return 10;
+        return 8;
     }
-    return 16;
+    return 20;
 }
 
-// Splitting feeds the longest-dragon tiebreak only after we are already long.
+// Large maps need more farmers. Small maps keep one long dragon.
 inline bool want_split(int length, int allies, int width, int height, int round, bool pearl_adjacent, bool threatened) {
-    if (round > 450 || pearl_adjacent || threatened || length < 12) {
+    if (round > 450 || pearl_adjacent || threatened || length < split_min_length(width, height)) {
         return false;
     }
     return allies < unit_cap(width, height);
+}
+
+// Child is born at the tail, facing away from the parent. It needs two free
+// neighbours besides the parent segment or it dies on its first turn.
+inline bool child_has_room(int open_from_tail) {
+    return open_from_tail >= 2;
 }
 
 }  // namespace logic

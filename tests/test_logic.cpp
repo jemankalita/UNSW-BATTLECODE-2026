@@ -91,15 +91,32 @@ void test_combat_and_split() {
     expect(logic::plan_score(1, 1, 3, 2, false, false) == 5100, "single step eat");
     expect(logic::plan_score(0, 2, 5, 1, false, true) == -3100, "escape sprint");
 
-    expect(logic::unit_cap(11, 11) == 6, "small map cap");
-    expect(logic::unit_cap(32, 32) == 10, "medium map cap");
-    expect(logic::unit_cap(64, 64) == 16, "large map cap");
-    expect(logic::want_split(12, 2, 32, 32, 100, false, false), "split when long");
-    expect(!logic::want_split(11, 2, 32, 32, 100, false, false), "no split before length 12");
-    expect(!logic::want_split(12, 10, 32, 32, 100, false, false), "cap stops splits");
+    expect(logic::unit_cap(11, 11) == 4, "small map cap");
+    expect(logic::unit_cap(32, 32) == 8, "medium map cap");
+    expect(logic::unit_cap(64, 64) == 20, "large map cap");
+    expect(logic::split_min_length(11, 11) == 12, "small split length");
+    expect(logic::split_min_length(32, 32) == 12, "medium split length");
+    expect(logic::split_min_length(64, 64) == 8, "large split length");
+    expect(!logic::want_split(9, 2, 32, 32, 100, false, false), "medium map waits until 12");
+    expect(logic::want_split(12, 2, 32, 32, 100, false, false), "medium map splits at 12");
+    expect(logic::want_split(8, 2, 64, 64, 100, false, false), "large map splits at 8");
+    expect(!logic::want_split(8, 2, 16, 16, 100, false, false), "small map waits until 12");
+    expect(!logic::want_split(20, 20, 64, 64, 100, false, false), "cap stops splits");
     expect(!logic::want_split(20, 2, 32, 32, 460, false, false), "no late splits");
     expect(!logic::want_split(20, 2, 32, 32, 100, true, false), "eat instead of split");
     expect(!logic::want_split(20, 2, 32, 32, 100, false, true), "no split beside an enemy");
+
+    expect(!logic::edge_blocked(false, false), "unseen open edge is walkable");
+    expect(!logic::edge_blocked(false, true), "unseen kelp is assumed open");
+    expect(logic::edge_blocked(true, true), "seen kelp is a wall");
+    expect(!logic::edge_blocked(true, false), "seen empty is open");
+    expect(logic::refuse_eat(0), "never eat into a dead end");
+    expect(!logic::refuse_eat(1), "eat when an exit remains");
+    expect(logic::avoid_enemy_head(10, 4, 2), "queen stays off a short enemy");
+    expect(!logic::avoid_enemy_head(3, 8, 2), "short dragon may close in");
+    expect(logic::avoid_enemy_head(10, 4, 1), "last dragon never invites a ram");
+    expect(logic::child_has_room(2), "child lives with two exits");
+    expect(!logic::child_has_room(1), "child dies in a one-tile pocket");
 }
 
 }  // namespace
