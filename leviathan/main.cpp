@@ -352,13 +352,18 @@ class Brain {
         return body;
     }
 
+    // Strict for real moves: unseen edges are walls. Optimistic for BFS so we
+    // can path through fog toward remembered pearls (edge_blocked returns false
+    // when the edge has never been seen).
     logic::Point destination(int x, int y, int dir) {
-        return destination(x, y, dir, false);
+        return destination(x, y, dir, true);
     }
 
-    logic::Point destination(int x, int y, int dir, bool) {
+    logic::Point destination(int x, int y, int dir, bool strict) {
         Cell& cell = at(x, y);
-        if (!cell.edge_seen[dir] || cell.kelp[dir]) {
+        bool blocked_edge = strict ? (!cell.edge_seen[dir] || cell.kelp[dir])
+                                   : logic::edge_blocked(cell.edge_seen[dir], cell.kelp[dir]);
+        if (blocked_edge) {
             logic::Point blocked;
             blocked.ok = false;
             blocked.x = x;
@@ -549,9 +554,22 @@ class Brain {
                 if (tile->get_dragon() != nullptr && !freed_here) {
                     continue;
                 }
+                if (!escape && near_enemy_head(second.x, second.y)) {
+                    continue;
+                }
                 int pearls = (ate ? 1 : 0) + (tile->has_pearl() ? 1 : 0);
                 if (!escape && length_ < 4 && pearls < 2) {
                     continue;
+                }
+                // Same dead-end rule as one-step eats: never land on a pearl pocket.
+                if (pearls > 0) {
+                    Step landing;
+                    landing.dir = dir2;
+                    landing.dest = second;
+                    landing.pearl = tile->has_pearl();
+                    if (logic::refuse_eat(future_exits(ct, landing))) {
+                        continue;
+                    }
                 }
                 bool fight = pearls == 1 && contested(ct, second);
                 int score = logic::plan_score(pearls, 2, 2, 0, fight, escape);
@@ -683,7 +701,8 @@ class Brain {
                 if (current_dist == 0 && dir == logic::opposite_dir(facing_)) {
                     continue;
                 }
-                logic::Point next = destination(x, y, dir);
+                // First step is a real move (strict). Later steps may cross fog.
+                logic::Point next = destination(x, y, dir, current_dist == 0);
                 if (!next.ok) {
                     continue;
                 }
@@ -797,8 +816,9 @@ class Brain {
         if (static_cast<int>(head_exits.size()) < 3) {
             return false;
         }
+        // Without a traced tail we cannot count the child's neighbours, so skip.
         if (!tail_known_ || !tail_neck_ok_) {
-            return width_ * height_ > 400;
+            return false;
         }
         int parent = dir_between(tail_, tail_neck_);
         int open = 0;
@@ -806,7 +826,7 @@ class Brain {
             if (dir == parent) {
                 continue;
             }
-            logic::Point next = destination(tail_.x, tail_.y, dir, false);
+            logic::Point next = destination(tail_.x, tail_.y, dir, true);
             if (!next.ok) {
                 continue;
             }
