@@ -1,0 +1,17 @@
+# Build artifacts
+*.exe
+*.o
+*.obj
+*.wasm
+*.wasm.tmp
+.unswbc-build/
+leviathan/.unswbc-build/
+starter/.unswbc-build/
+
+# Generated replays and logs
+replays/
+*.replay
+*.log
+
+# Local test binaries
+tests/*.exe
