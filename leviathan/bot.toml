@@ -1,3 +1,4 @@
+# leviathan v3 — map-policy swarm+scorer, portals, claims
 # created by `unswbc init`
 [project]
 language = "c++"
