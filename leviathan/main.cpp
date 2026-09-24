@@ -47,6 +47,8 @@ class Brain {
         here_ = ct.get_position();
         enemy_heads_.clear();
         ally_heads_.clear();
+        unswbc::SonarEchoes echoes = ct.get_sonar_echoes();
+        echo_enemy_head_ = echoes.enemy_head > 0;
 
         observe(ct);
         hear(ct);
@@ -67,9 +69,12 @@ class Brain {
         }
 
         std::vector<Step> raw = safe_steps(ct, here_.x, here_.y, facing_, true);
-        std::vector<Step> safe = filter_steps(ct, raw, true);
+        std::vector<Step> safe = filter_steps(ct, raw, true, true);
         if (safe.empty()) {
-            safe = filter_steps(ct, raw, false);
+            safe = filter_steps(ct, raw, true, false);
+        }
+        if (safe.empty()) {
+            safe = filter_steps(ct, raw, false, false);
         }
         if (safe.empty()) {
             safe = raw;
@@ -83,6 +88,7 @@ class Brain {
 
         int kill = ram_dir(ct, false);
         if (kill >= 0) {
+            broadcast_kill(ct, kill);
             commit(ct, kill, "ram");
             return;
         }
@@ -109,7 +115,7 @@ class Brain {
             return;
         }
 
-        int roam = pick_roam(safe, length_ >= 8 || nearest_enemy_dist() <= 3);
+        int roam = pick_roam(ct, safe, length_ >= 8 || nearest_enemy_dist() <= 3);
         if (roam >= 0) {
             commit(ct, roam, "roam");
             return;
@@ -125,6 +131,7 @@ class Brain {
 
         int ram = ram_dir(ct, true);
         if (ram >= 0) {
+            broadcast_kill(ct, ram);
             commit(ct, ram, "ram");
             return;
         }
@@ -154,6 +161,7 @@ class Brain {
     int hint_y_ = -1;
     int hint_len_ = 0;
     int hint_round_ = -1;
+    bool echo_enemy_head_ = false;
     int history_[8] = {};
     int history_n_ = 0;
 
@@ -329,6 +337,22 @@ class Brain {
         ct.send_sonar(from_index(dir), logic::pack_sonar(kind, x, y, aux, my_id_, round_));
     }
 
+    // A head-to-head ram kills both dragons and crystallises about half of
+    // each into pearls right where they fall. We are about to die too, so
+    // there is nothing better to do with this turn's sonar budget than tell
+    // every ally in range where the loot is; the last message in each
+    // direction wins, so this simply overrides whatever speak() already
+    // queued.
+    void broadcast_kill(unswbc::Controller& ct, int ram_dir) {
+        logic::Point spot = destination(here_.x, here_.y, ram_dir);
+        if (!spot.ok) {
+            return;
+        }
+        for (int dir = 0; dir < 4; ++dir) {
+            send(ct, dir, logic::KIND_PEARL, spot.x, spot.y, 0);
+        }
+    }
+
     std::vector<logic::Point> trace_body(unswbc::Controller& ct) const {
         std::vector<logic::Point> body;
         logic::Point head;
@@ -454,13 +478,41 @@ class Brain {
         return false;
     }
 
-    std::vector<Step> filter_steps(unswbc::Controller& ct, std::vector<Step> const& raw, bool avoid_heads) {
+    // A dragon that is still farming keeps growing inside whatever region it
+    // is in, so the room a step needs is not just today's length — it is
+    // today's length plus headroom for the growth that will happen before
+    // the dragon thinks to leave. This is a heuristic margin, not a proof of
+    // safety: a flood fill only sees the region as fixed obstacles right
+    // now, and cannot know the region's true capacity once the dragon has
+    // wound further into it.
+    int room_margin() const {
+        return length_ + 4;
+    }
+
+    int room_cap() const {
+        int needed = room_margin();
+        return needed < 60 ? 60 : needed;
+    }
+
+    // check_room rejects a step whose landing tile does not have enough
+    // reachable space for the dragon's own body. Without this, pearl-chasing
+    // and goal-seeking can walk the dragon several turns deep into a pocket
+    // that only closes once it is too late to back out — the one-tile
+    // future_exits() check below catches a dead end one step ahead, but not
+    // one three or four steps ahead.
+    std::vector<Step> filter_steps(unswbc::Controller& ct, std::vector<Step> const& raw, bool avoid_heads,
+                                    bool check_room) {
         std::vector<Step> out;
+        int room_needed = room_margin();
+        int cap = room_cap();
         for (Step const& step : raw) {
             if (avoid_heads && near_enemy_head(step.dest.x, step.dest.y)) {
                 continue;
             }
             if (future_exits(ct, step) < 1) {
+                continue;
+            }
+            if (check_room && flood_area(ct, step.dest.x, step.dest.y, cap) < room_needed) {
                 continue;
             }
             out.push_back(step);
@@ -530,11 +582,6 @@ class Brain {
                 continue;
             }
             bool ate = step.pearl;
-            logic::Point freed;
-            freed.ok = tail_known_ && !ate;
-            if (freed.ok) {
-                freed = tail_;
-            }
             for (int dir2 = 0; dir2 < 4; ++dir2) {
                 if (dir2 == logic::opposite_dir(step.dir)) {
                     continue;
@@ -546,12 +593,16 @@ class Brain {
                 if (!second.ok || (second.x == step.dest.x && second.y == step.dest.y)) {
                     continue;
                 }
-                bool freed_here = freed.ok && second.x == freed.x && second.y == freed.y;
+                // The engine checks every step of a sprint against the board
+                // as it stood at the start of the turn: our own tail never
+                // counts as vacated mid-sprint, even on the step after it
+                // would normally have retracted. Treat any occupied tile,
+                // tail included, as fatal for the whole turn.
                 unswbc::Tile const* tile = ct.get_tile(unswbc::Position(second.x, second.y));
                 if (tile == nullptr) {
                     continue;
                 }
-                if (tile->get_dragon() != nullptr && !freed_here) {
+                if (tile->get_dragon() != nullptr) {
                     continue;
                 }
                 if (!escape && near_enemy_head(second.x, second.y)) {
@@ -768,11 +819,57 @@ class Brain {
         return score;
     }
 
-    int pick_roam(std::vector<Step> const& safe, bool flee) {
+    // Bounded flood fill: how much open room sits beyond this tile, capped
+    // at 'cap' so it stays cheap on any map size. openness() alone only
+    // looks one tile ahead, so a roam choice can look fine locally while
+    // leading straight into a shrinking pocket a few tiles further in —
+    // that is exactly how a dragon walks itself into a dead end and ends
+    // up ramming kelp with no legal move left. This trades a little
+    // farming precision for not doing that.
+    int flood_area(unswbc::Controller& ct, int sx, int sy, int cap) {
+        std::vector<std::pair<int, int>> seen;
+        seen.reserve(static_cast<std::size_t>(cap));
+        seen.emplace_back(sx, sy);
+        std::size_t head = 0;
+        while (head < seen.size() && static_cast<int>(seen.size()) < cap) {
+            int x = seen[head].first;
+            int y = seen[head].second;
+            ++head;
+            for (int dir = 0; dir < 4; ++dir) {
+                logic::Point next = destination(x, y, dir, false);
+                if (!next.ok) {
+                    continue;
+                }
+                bool already = false;
+                for (auto const& p : seen) {
+                    if (p.first == next.x && p.second == next.y) {
+                        already = true;
+                        break;
+                    }
+                }
+                if (already || occupied(ct, next)) {
+                    continue;
+                }
+                seen.emplace_back(next.x, next.y);
+                if (static_cast<int>(seen.size()) >= cap) {
+                    break;
+                }
+            }
+        }
+        return static_cast<int>(seen.size());
+    }
+
+    int pick_roam(unswbc::Controller& ct, std::vector<Step> const& safe, bool flee) {
         int best_dir = -1;
         int best_score = -1000000000;
+        int room_needed = room_margin();
+        int cap = room_cap();
         for (Step const& step : safe) {
             int score = openness(step.dest.x, step.dest.y) * 20;
+            int room = flood_area(ct, step.dest.x, step.dest.y, cap);
+            if (room < room_needed) {
+                score -= (room_needed - room) * 150;
+            }
             if (step.dir == facing_) {
                 score += 30;
             }
@@ -785,10 +882,46 @@ class Brain {
             if (!at(step.dest.x, step.dest.y).seen) {
                 score += 80;
             }
-            if (flee) {
-                for (Head const& head : enemy_heads_) {
-                    score += logic::chebyshev(step.dest.x, step.dest.y, head.x, head.y, width_, height_) * 40;
+            if (!enemy_heads_.empty()) {
+                int ally_support = 0;
+                for (Head const& ally : ally_heads_) {
+                    if (ally.id == my_id_) {
+                        continue;
+                    }
+                    if (logic::chebyshev(step.dest.x, step.dest.y, ally.x, ally.y, width_, height_) <= 2) {
+                        ++ally_support;
+                    }
                 }
+                int nearest_threat = 0;
+                int nearest_len = 0;
+                for (Head const& head : enemy_heads_) {
+                    int dist = logic::chebyshev(step.dest.x, step.dest.y, head.x, head.y, width_, height_);
+                    if (nearest_threat == 0 || dist < nearest_threat) {
+                        nearest_threat = dist;
+                        nearest_len = head.len;
+                    }
+                }
+                score += logic::move_risk_score(length_, nearest_len, nearest_threat,
+                                               openness(step.dest.x, step.dest.y), ally_support);
+                if (flee) {
+                    score += nearest_threat * 40;
+                }
+            } else if (echo_enemy_head_ && length_ <= 6) {
+                // No visual on the threat yet, but this turn's sonar echo
+                // says an enemy head is out there somewhere within
+                // WIDTH + HEIGHT tiles. We're still small enough that a
+                // stray encounter is costly, so lean toward ground we've
+                // already checked and toward allies rather than fresh fog.
+                int ally_support = 0;
+                for (Head const& ally : ally_heads_) {
+                    if (ally.id == my_id_) {
+                        continue;
+                    }
+                    if (logic::chebyshev(step.dest.x, step.dest.y, ally.x, ally.y, width_, height_) <= 2) {
+                        ++ally_support;
+                    }
+                }
+                score += ally_support * 60 - 40;
             }
             int wait = at(step.dest.x, step.dest.y).spawn_round - round_;
             if (wait >= 0 && wait <= 8) {

@@ -224,23 +224,61 @@ inline bool avoid_enemy_head(int self_len, int enemy_len, int allies) {
     return !worth_trade(self_len, enemy_len, allies);
 }
 
+// A local move is safer when it keeps distance from larger enemy heads, keeps
+// at least two exits, and is supported by nearby allies. This heuristic is used
+// to choose among otherwise equal roam options, and to avoid exposing the head
+// to a short-range ram.
+inline int move_risk_score(int self_len, int enemy_len, int distance, int exits, int ally_support) {
+    int score = 0;
+    if (distance <= 1) {
+        score -= 1200;
+        if (enemy_len >= self_len) {
+            score -= 800;
+        }
+        if (enemy_len >= self_len + 2) {
+            score -= 800;
+        }
+    } else if (distance == 2) {
+        score -= 200;
+        if (enemy_len >= self_len + 2) {
+            score -= 400;
+        }
+    }
+    if (exits <= 1) {
+        score -= 1200;
+    } else if (exits == 2) {
+        score -= 200;
+    }
+    if (enemy_len >= self_len + 3 && distance <= 2) {
+        score -= 700;
+    }
+    score += ally_support * 250;
+    return score;
+}
+
 inline int split_min_length(int width, int height) {
     int area = width * height;
     if (area <= 1500) {
-        return 12;
+        return 10;
     }
-    return 8;
+    return 6;
 }
 
+// The team cap is 64 living dragons. Head-to-head contact always kills both
+// sides regardless of length, so a longer enemy has no free way to punish a
+// short farmer; the only real risks to a small dragon are self-inflicted
+// (pockets, its own body, kelp). With no starvation mechanic, more mouths
+// strictly means more aggregate pearls per round, so split hard toward the
+// real cap and leave only enough headroom to avoid self-congestion.
 inline int unit_cap(int width, int height) {
     int area = width * height;
     if (area <= 400) {
-        return 4;
+        return 10;
     }
     if (area <= 1500) {
-        return 8;
+        return 24;
     }
-    return 20;
+    return 48;
 }
 
 // Large maps need more farmers. Small maps keep one long dragon.

@@ -30,20 +30,58 @@ split policy); `main.cpp` is the per-turn decision loop.
 - **Eat first.** Step onto a visible pearl, and remember tile countdowns so
   the bot returns just before a pearl spawns.
 - **Stay alive.** Never reverse into its own neck, never cross kelp, and
-  never enter a one-tile pocket. Unseen edges are treated as closed.
+  never enter a one-tile pocket. Unseen edges are treated as closed. A sprint
+  never treats its own tail as vacated mid-turn — the engine checks every
+  step of a sprint against the board as it stood at the start of the turn, so
+  the tail is a wall for the whole turn even on the step after it would
+  normally have retracted.
 - **Sprint with purpose.** A sprint costs one segment per extra step, so it is
   only used to grab two pearls at once or to steal a contested pearl from an
   enemy.
-- **Split late, and only with room.** A length-2 child is split off at length
-  12 on small and medium maps (length 8 on large ones), and only if the head
-  has three exits. Caps are 4 / 8 / 20 dragons. A child born in a pocket dies
-  on its first turn.
+- **Split hard toward the real cap.** A length-2 child splits off once the
+  parent reaches length 10 (6 on large maps), with the head kept to three
+  exits. Caps are 10 / 24 / 48 dragons (against a true team limit of 64):
+  head-to-head contact always kills both dragons regardless of length, so a
+  longer enemy has no free way to punish a short farmer, and there is no
+  starvation mechanic — more mouths is strictly more aggregate growth. A
+  child born in a pocket dies on its first turn.
 - **Trade up, never down.** A short dragon will ram a clearly longer enemy
-  head. Longer dragons stay a tile away so they are not rammed. The last
-  dragon never invites a head-to-head.
+  head — a mutual kill, per the rules, that trades a cheap dragon for an
+  expensive one and drops half of each dragon's length as pearls at the
+  collision site. Longer dragons stay a tile away so they are not rammed.
+  The last dragon never invites a head-to-head. On a kill, the whole sonar
+  budget for that turn broadcasts the loot's location to any ally in range.
 - **Talk by sonar.** Teammates broadcast pearl positions and enemy heads using
   a 64-bit packed message with a multiplicative checksum, so random enemy
-  sonar is ignored.
+  sonar is ignored. Passive sonar echoes (free information from the same
+  four pings, no separate cost) add a soft warning when an enemy head is
+  somewhere on the map but not yet seen.
+
+## Known limitation
+
+On very kelp-dense maps the bot can still walk itself into a shrinking
+pocket over many turns and end up with no legal move (visible in replays as
+a run of `roam`/`go`/`eat` indicators followed by `stuck`). Every step —
+eating, BFS goal-seeking, and roaming alike — is now filtered by a bounded
+flood fill of reachable space before it is offered as a candidate, with
+graceful fallback if that empties the candidate set. This is a real
+improvement (see below) but not a full fix: a flood fill only sees a region
+as fixed obstacles *right now*, and cannot know that the dragon's own body
+will keep consuming that region's capacity as it keeps farming inside it.
+A robust fix needs entrance/cut-vertex detection (is the tile ahead the
+only way out of a region smaller than the body will eventually be?), which
+is future work.
+
+Local sanity check — `unswbc run <map> leviathan starter --sandbox`
+(the judge's own compiler) across all 11 bundled maps, before vs. after
+this round of changes:
+
+| | before | after |
+|---|---|---|
+| wins vs. the stock starter | 6 / 11 | 9 / 11 |
+
+`queen_of_spades` (the exact map of the team's worst ranked loss to date)
+and `trauma` still lose to the pocket trap even after this fix.
 
 ## Quickstart
 
@@ -77,11 +115,14 @@ Create an API key on your team page (it starts with `bc_`), then:
 
 ```
 unswbc auth set bc_...
-unswbc submit leviathan -n "leviathan v1" -d "Pearl chase, pocket avoidance, late splits"
+unswbc submit leviathan -n "leviathan v2" -d "Sprint-tail fix, higher split caps, flood-fill pocket avoidance"
 ```
 
 ## Status
 
-Beats the stock starter on every bundled map, playing as either colour, under
-the judge's sandbox. Turns use roughly 4–7 million of the 100 million CPU-point
-budget.
+Turns use roughly 4–7 million of the 100 million CPU-point budget. Beats
+the stock starter on 9 of the 11 bundled maps under `unswbc run --sandbox`
+(the judge's own compiler); see Known limitation above for the two that
+still lose to a self-trap on very kelp-dense terrain. Real ladder results
+as of the last submission (`leviathan v1`, before this round of changes):
+13 wins / 20 losses.
