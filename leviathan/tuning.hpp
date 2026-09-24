@@ -14,8 +14,17 @@ static constexpr int SPLIT_LEN = 4;
 static constexpr int SPLIT_LAST_ROUND = 380;
 // Segments handed to each new farmer.
 static constexpr int CHILD_SIZE = 2;
+// 1 keeps v4's cautious splitting (no split beside an enemy or instead of a
+// pearl); 0 splits whenever the child has room to move.
+static constexpr int SPLIT_CAREFUL = 0;
+// Free tiles a newborn child needs around it.
+static constexpr int CHILD_ROOM = 4;
 // Map tiles per dragon when sizing the team.
 static constexpr int TILES_PER_DRAGON = 12;
+// Worth, in tenths of a pearl, of stepping through a portal whose far end
+// we have never seen. Unexplored water behind portals is where the pearls
+// pile up on portal-heavy maps.
+static constexpr int EXPLORE_PORTAL = 25;
 // From this round the team feeds its king (0 turns feeding off) ...
 static constexpr int FEED_ROUND = 420;
 // ... keeping this many dragons (king included) out of it.

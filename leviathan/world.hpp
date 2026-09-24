@@ -14,6 +14,8 @@ namespace world {
 static constexpr int EDGE_UNKNOWN = -2;
 static constexpr int EDGE_OPEN = -1;
 static constexpr int EDGE_KELP = -3;
+// Stand-in portal ids for mirrored pairs start here (real ids are small).
+static constexpr int MIRROR_PORTAL = 1 << 20;
 
 struct Cell {
     int edge[4] = {EDGE_UNKNOWN, EDGE_UNKNOWN, EDGE_UNKNOWN, EDGE_UNKNOWN};
@@ -40,6 +42,9 @@ struct Landing {
     int y = 0;
     bool ok = false;
     bool portal = false;
+    // A portal whose far end we have never seen: the step is legal and lands
+    // somewhere real, we just cannot say where until we cross it.
+    bool unknown_exit = false;
 };
 
 class Map {
@@ -120,6 +125,7 @@ class Map {
         }
         auto found = portals_.find(portal_id);
         if (found == portals_.end()) {
+            out.unknown_exit = true;
             return out;
         }
         std::vector<logic::PortalSide> const& sides = found->second;
@@ -128,6 +134,7 @@ class Map {
         out.y = p.y;
         out.ok = p.ok;
         out.portal = true;
+        out.unknown_exit = !p.ok;
         return out;
     }
 
@@ -249,21 +256,28 @@ class Map {
     }
 
     // Copy what we observed at (x, y) onto its mirror, where we have not
-    // looked ourselves. Portal ids do not mirror, so portals stay unknown.
+    // looked ourselves. The mirror of a portal pair is another pair with an
+    // id we cannot know, so it gets a stand-in id of its own; once both ends
+    // of the real pair are known, both ends of the mirrored pair are too.
     void mirror_cell(int x, int y) {
         Cell const& a = at(x, y);
         logic::Point m = logic::mirror_tile(symmetry_, x, y, width_, height_);
         Cell& b = at(m.x, m.y);
         for (int dir = 0; dir < 4; ++dir) {
             int mdir = logic::mirror_dir(symmetry_, dir);
-            if (!a.edge_observed[dir] || b.edge_observed[mdir] || a.edge[dir] >= 0) {
+            if (!a.edge_observed[dir] || b.edge_observed[mdir]) {
                 continue;
             }
-            b.edge[mdir] = a.edge[dir];
+            int value = a.edge[dir] >= 0 ? a.edge[dir] + MIRROR_PORTAL : a.edge[dir];
+            b.edge[mdir] = value;
             logic::Point next = logic::step_wrap(m.x, m.y, mdir, width_, height_);
             Cell& beyond = at(next.x, next.y);
             if (!beyond.edge_observed[logic::opposite_dir(mdir)]) {
-                beyond.edge[logic::opposite_dir(mdir)] = a.edge[dir];
+                beyond.edge[logic::opposite_dir(mdir)] = value;
+            }
+            if (value >= 0) {
+                remember_portal(value, m.x, m.y, mdir);
+                remember_portal(value, next.x, next.y, logic::opposite_dir(mdir));
             }
         }
         int fresh = b.seen_round > b.timed_round ? b.seen_round : b.timed_round;

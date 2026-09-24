@@ -20,12 +20,12 @@ constexpr long long THREAT_SCALE = PEARL / 50;
 constexpr long long ROOM_STEP = PEARL / 50;
 constexpr long long STRAIGHT = PEARL / 20;
 constexpr long long PORTAL_RISK = PEARL / 2;
+constexpr int PORTAL_FRESH = 4;
 constexpr long long UNSAFE = 1000000000000LL;
 constexpr int VALUE_DEPTH = 60;
 constexpr int KAMIKAZE_LEN = 5;
 constexpr int SURVIVE_DEPTH = 40;
 constexpr int SURVIVE_BUDGET = 4000;
-constexpr int CHILD_ROOM = 16;
 constexpr int HEAD_REACH = 2;
 constexpr int FEED_RANGE = 3;
 constexpr long long CROWD = PEARL / 8;
@@ -49,7 +49,8 @@ struct Plan {
     int lasts = 0;           // turns the look-ahead could keep moving
     bool safe = false;
     bool portal = false;
-    bool portal_blind = false;  // the far side of the portal is out of view
+    bool portal_blind = false;  // out of view, and a dragon stood there lately
+    bool explore = false;       // through a portal whose far end we have never seen
     int ram_len = 0;         // enemy length if the last step rams a head
     long long score = 0;
 };
@@ -416,6 +417,14 @@ class Brain {
     void extend(Plan& plan, int from, int steps_left, std::vector<Plan>& out) {
         for (int dir = 0; dir < 4; ++dir) {
             world::Landing land = map_.step(cx(from), cy(from), dir, false);
+            if (land.unknown_exit && plan.dirs.empty() && steps_left == 1) {
+                Plan explore;
+                explore.dirs.push_back(dir);
+                explore.portal = true;
+                explore.explore = true;
+                out.push_back(explore);
+                continue;
+            }
             if (!land.ok || (land.portal && !plan.dirs.empty())) {
                 continue;
             }
@@ -432,7 +441,8 @@ class Brain {
             next.dirs.push_back(dir);
             next.cells.push_back(cell);
             next.portal = next.portal || land.portal;
-            if (land.portal && map_.cell(cell).seen_round != round_) {
+            if (land.portal && map_.cell(cell).seen_round != round_ &&
+                round_ - map_.cell(cell).occupied_round <= PORTAL_FRESH) {
                 next.portal_blind = true;
             }
             if (ram) {
@@ -479,6 +489,16 @@ class Brain {
     }
 
     void judge(Plan& plan) {
+        if (plan.explore) {
+            // Whatever lies past an unexplored portal is fresh water. The
+            // engine always lands the head on a real tile; the only risk is
+            // a dragon standing on it, so this counts as safe.
+            plan.safe = threat_[static_cast<std::size_t>(head_)] == 0;
+            plan.lasts = SURVIVE_DEPTH;
+            plan.length = len_;
+            plan.score = static_cast<long long>(tuning::EXPLORE_PORTAL) * PEARL / 10 - crowding(head_) / 2;
+            return;
+        }
         int steps = static_cast<int>(plan.dirs.size());
         plan.length = len_ - (steps - 1) + plan.eaten;
         if (plan.ram_len > 0) {
@@ -491,9 +511,8 @@ class Brain {
         plan.room = flood(body, plan.length, need * 2 + 8, pearls);
         bool lives = survives(body, plan.length);
         plan.lasts = lives ? SURVIVE_DEPTH : deepest_;
-        // We cannot see through a portal. Crossing one blind can land the
-        // head on a dragon, so it is a last resort, never a safe move; the
-        // planners may still count portals as exits.
+        // We cannot see through a portal. A far tile we saw a dragon on
+        // lately may still hold one, so that crossing is a last resort.
         plan.safe = plan.room >= need + pearls && lives && !plan.portal_blind;
         int end = plan.cells.back();
         long long score = value_from(body, plan.length) - static_cast<long long>(steps - 1) * PEARL;
@@ -820,13 +839,20 @@ class Brain {
         if (!logic::want_split(len_, units_, cap, round_, tuning::SPLIT_LEN, tuning::SPLIT_LAST_ROUND)) {
             return false;
         }
-        if (!ct.can_split(tuning::CHILD_SIZE) || static_cast<int>(body_.size()) < len_ || safe_move.eaten > 0) {
+        if (!ct.can_split(tuning::CHILD_SIZE) || threat_[static_cast<std::size_t>(head_)] > 0) {
             return false;
         }
-        if (threat_[static_cast<std::size_t>(head_)] > 0 || enemy_within(3)) {
+        // Ladder replays: the teams that beat us split whenever they can and
+        // shrug off the children they lose, so only the checks that keep a
+        // split from being plainly suicidal stay unconditional.
+        if (tuning::SPLIT_CAREFUL && (safe_move.eaten > 0 || enemy_within(3))) {
             return false;
         }
-        if (open_room(body_.back(), CHILD_ROOM) < CHILD_ROOM) {
+        bool tail_known = static_cast<int>(body_.size()) >= len_;
+        if (tail_known && open_room(body_.back(), tuning::CHILD_ROOM) < tuning::CHILD_ROOM) {
+            return false;
+        }
+        if (!tail_known && tuning::SPLIT_CAREFUL) {
             return false;
         }
         ct.do_split(tuning::CHILD_SIZE);
@@ -883,6 +909,9 @@ class Brain {
             trail_.push_back(cell);
         }
         pending_portal_ = plan.portal && plan.dirs.size() == 1;
+        if (plan.explore) {
+            ct.set_indicator_string("explore");
+        }
         if (pending_portal_) {
             portal_from_ = head_;
             portal_dir_ = plan.dirs.front();

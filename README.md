@@ -29,11 +29,12 @@ tools/stuck_dump.py draws a dragon's last few 7x7 views before it died
 
 ## Strategy
 
-- **Swarm early.** Replays of strong ladder teams showed they split early and
-  often, up to the 64-dragon limit. Leviathan splits a two-segment child
-  whenever a dragon reaches length 4, up to one dragon per 12 map tiles,
-  until round 380. More heads eat more pearls each round, and a big team is
-  hard to wipe out.
+- **Swarm early.** Every top-50 team in 587 ladder replays splits a
+  two-segment child the moment a dragon reaches length 4, from round 0, and
+  keeps 40–64 dragons until about round 400. Leviathan does the same, up to
+  one dragon per 12 map tiles, until round 380, and splits whenever the
+  child has a few free tiles. Losing children is cheap. Being outnumbered is
+  not: on the small maps the team with more heads wipes out the other.
 - **Never die by accident.** Every move is checked by a flood fill in which
   our own body frees up as the tail passes, and by an exact bounded look-ahead
   that simulates the body step by step, counting pearls eaten on the way,
@@ -41,6 +42,11 @@ tools/stuck_dump.py draws a dragon's last few 7x7 views before it died
   could reach before our next move count as possibly taken. Crossing a portal
   whose far side is out of view is a last resort only. When every move is bad,
   the dragon picks the one that keeps it alive longest.
+- **Go through portals.** Four of the nine ranked maps wall each spawn in
+  behind portals, with the fountain tiles (pearls every round) beyond them.
+  A portal whose far end has never been seen is still crossed when the
+  current area is running dry. The engine always lands the head on a real
+  tile, and the pair's far end is learned on arrival.
 - **Know the map.** Maps are mirrored in x, in y, or rotated 180°. Each dragon
   rules out symmetries whose mirror images disagree with what it has seen.
   Once one symmetry is left, it fills in unseen kelp and pearl timings from
@@ -77,16 +83,22 @@ its engine imports:
 python tools/genmap.py gen_maps --count 24 --seed 7
 ```
 
-Local results on the 11 bundled maps plus 24 generated maps, both sides (70 games each):
+Local results. Each row is both sides of every map; "35 maps" means the 11
+bundled plus 24 generated ones, and "33 maps" means the 9 ranked plus 24
+generated.
 
 | matchup | result |
 |---|---|
-| leviathan vs `main`'s v3 (map-policy swarm and scorer) | 70 W / 0 L |
-| leviathan vs stock starter | 70 W / 0 L |
-| swarm settings vs the same bot with conservative splitting | 65 W / 5 L |
-| king feeding vs the same bot without it | 45 W / 25 L |
+| v5 (portal exploration, eager splits) vs v4 (33 maps) | 47 W / 19 L |
+| v4 vs `main`'s v3 (35 maps) | 70 W / 0 L |
+| v4 vs stock starter (35 maps) | 70 W / 0 L |
+| king feeding vs none (35 maps) | 45 W / 25 L |
 
-These are all local games. Real ladder opponents may play differently.
+Settings that tested neutral or worse and were left out: one dragon per 8
+tiles (34–32), feeding from round 400 (29–37), keeping 8 dragons out of
+feeding (40–30 against no feeding, versus 45–25 when keeping 3).
+
+These are all local games; the ladder is the real test.
 
 Turns use about 7–16M of the 100M CPU-point budget, with a worst case near 60M.
 
