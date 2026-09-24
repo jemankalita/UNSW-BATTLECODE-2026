@@ -13,6 +13,19 @@ static constexpr int DIR_W = 3;
 
 static constexpr int KIND_PEARL = 1;
 static constexpr int KIND_ENEMY = 2;
+static constexpr int KIND_CLAIM = 3;
+static constexpr int KIND_SECTOR = 4;
+static constexpr int KIND_SCORER = 5;
+
+// Tuned to the bundled ladder maps:
+//   Snowball   area <= 520   Arena, Colosseum, Default Small, Devil
+//   MidContest area <= 1100  Trophy, Queen Of Spades, Default
+//   FarmLength area >  1100  Trauma, Stronghold, Schooltime, Big Empty
+enum class Macro {
+    Snowball = 0,
+    MidContest = 1,
+    FarmLength = 2,
+};
 
 static constexpr std::uint64_t SONAR_KEY = 0xA31B57C9E2046DF1ull;
 static constexpr std::uint64_t SONAR_MUL = 0x9E3779B97F4A7C15ull;
@@ -176,8 +189,18 @@ inline int sonar_age(int current_round, int message_round_mod) {
 
 // Only a short dragon rams a clearly longer enemy. The last dragon on our team never does:
 // dying with it is a draw at best, and a loss if they still have dragons.
-inline bool worth_trade(int self_len, int enemy_len, int allies) {
-    if (allies <= 1 || self_len > 6) {
+// Snowball farmers may ram a little more freely (self <= 5, enemy at least self+2).
+inline bool worth_trade(int self_len, int enemy_len, int allies, bool snowball) {
+    if (allies <= 1) {
+        return false;
+    }
+    if (snowball) {
+        if (self_len > 5) {
+            return false;
+        }
+        return enemy_len >= self_len + 2;
+    }
+    if (self_len > 6) {
         return false;
     }
     return enemy_len >= self_len + 3;
@@ -216,39 +239,263 @@ inline bool refuse_eat(int exits) {
     return exits < 1;
 }
 
+// Length >= 8 needs two exits after the bite. Shorter dragons only refuse a dead end.
+inline bool long_body_refuse_eat(int exits, int length) {
+    if (length >= 8) {
+        return exits < 2;
+    }
+    return exits < 1;
+}
+
+// One-exit corridor with an enemy head within chebyshev 3. Eating is allowed
+// only when the landing still has two exits (a one-exit landing never qualifies).
+inline bool corridor_refuse(int exits, int enemy_dist, bool eating_pearl) {
+    if (exits != 1 || enemy_dist > 3) {
+        return false;
+    }
+    if (eating_pearl && exits >= 2) {
+        return false;
+    }
+    return true;
+}
+
+// Both sprint edges must already have been seen and must not be kelp.
+inline bool sprint_edges_open(bool seen_first, bool kelp_first, bool seen_second, bool kelp_second) {
+    return seen_first && !kelp_first && seen_second && !kelp_second;
+}
+
 // Longer dragons must not step next to a shorter enemy head: that enemy will ram.
 inline bool avoid_enemy_head(int self_len, int enemy_len, int allies) {
     if (allies <= 1) {
         return true;
     }
-    return !worth_trade(self_len, enemy_len, allies);
+    return !worth_trade(self_len, enemy_len, allies, false);
 }
 
-inline int split_min_length(int width, int height) {
-    int area = width * height;
-    if (area <= 1500) {
-        return 12;
+// Near-equal long bodies should step apart instead of offering a head-to-head.
+inline bool peer_threat(int self_len, int enemy_len) {
+    if (self_len < 8) {
+        return false;
     }
-    return 8;
+    int delta = self_len - enemy_len;
+    if (delta < 0) {
+        delta = -delta;
+    }
+    return delta <= 2;
+}
+
+inline int avoid_radius(int self_len, bool scorer) {
+    if (scorer && self_len >= 12) {
+        return 2;
+    }
+    return 1;
+}
+
+inline Macro classify_macro(int width, int height) {
+    int area = width * height;
+    if (area <= 520) {
+        return Macro::Snowball;
+    }
+    if (area <= 1100) {
+        return Macro::MidContest;
+    }
+    return Macro::FarmLength;
+}
+
+struct MapPolicy {
+    Macro macro;
+    int split_min;
+    int unit_cap;
+    int scorer_min_length;
+    int scorer_stop_round;
+    int pearl_horizon;
+    int sector_prefer;
+    bool portal_bfs;
+    bool outer_first;
+};
+
+inline int split_min_length(int width, int height, int round) {
+    Macro macro = classify_macro(width, height);
+    if (macro == Macro::Snowball) {
+        return 3;
+    }
+    if (macro == Macro::FarmLength && round >= 200) {
+        return 6;
+    }
+    return 4;
 }
 
 inline int unit_cap(int width, int height) {
-    int area = width * height;
-    if (area <= 400) {
-        return 4;
+    Macro macro = classify_macro(width, height);
+    if (macro == Macro::Snowball) {
+        return 12;
     }
-    if (area <= 1500) {
-        return 8;
+    if (macro == Macro::MidContest) {
+        return 16;
     }
-    return 20;
+    return 28;
 }
 
-// Large maps need more farmers. Small maps keep one long dragon.
-inline bool want_split(int length, int allies, int width, int height, int round, bool pearl_adjacent, bool threatened) {
-    if (round > 450 || pearl_adjacent || threatened || length < split_min_length(width, height)) {
+inline MapPolicy make_policy(int width, int height, int portal_pairs, int round) {
+    MapPolicy policy;
+    policy.macro = classify_macro(width, height);
+    policy.split_min = split_min_length(width, height, round);
+    policy.unit_cap = unit_cap(width, height);
+    policy.scorer_min_length = 0;
+    policy.scorer_stop_round = 100000;
+    policy.pearl_horizon = 12;
+    policy.sector_prefer = 0;
+    policy.portal_bfs = portal_pairs > 0;
+    policy.outer_first = false;
+    if (policy.macro == Macro::Snowball) {
+        policy.pearl_horizon = 8;
+    } else if (policy.macro == Macro::MidContest) {
+        policy.scorer_min_length = 10;
+        policy.scorer_stop_round = 300;
+        policy.pearl_horizon = 12;
+        policy.sector_prefer = 1;
+        policy.outer_first = true;
+        policy.portal_bfs = true;
+    } else {
+        policy.scorer_min_length = 12;
+        policy.scorer_stop_round = 250;
+        policy.pearl_horizon = 20;
+        policy.sector_prefer = 2;
+        policy.portal_bfs = portal_pairs > 0;
+    }
+    return policy;
+}
+
+struct AllySnap {
+    int id;
+    int length;
+};
+
+// Longest ally at or above the length gate. Ties go to the lowest id.
+// Snowball passes min_length <= 0 and never designates a scorer.
+inline int designated_scorer(AllySnap const* allies, int count, int round, int min_length) {
+    if (min_length <= 0 || round < 80) {
+        return -1;
+    }
+    int best_id = -1;
+    int best_len = -1;
+    for (int i = 0; i < count; ++i) {
+        int len = allies[i].length;
+        int id = allies[i].id;
+        if (len < min_length) {
+            continue;
+        }
+        if (best_id < 0 || len > best_len || (len == best_len && id < best_id)) {
+            best_id = id;
+            best_len = len;
+        }
+    }
+    return best_id;
+}
+
+inline bool want_split(int length, int allies, int round, bool pearl_adjacent, bool threatened,
+                       bool is_scorer, bool child_room, int width, int height) {
+    if (pearl_adjacent || threatened || is_scorer || !child_room) {
         return false;
     }
-    return allies < unit_cap(width, height);
+    MapPolicy policy = make_policy(width, height, 0, round);
+    if (allies >= policy.unit_cap) {
+        return false;
+    }
+    int need = policy.split_min;
+    if (policy.macro != Macro::Snowball && round < 60 && allies < 6 && need > 3) {
+        need = 3;
+    }
+    if (length < need) {
+        return false;
+    }
+    if (policy.macro == Macro::Snowball && round > 100 && allies >= 8) {
+        return false;
+    }
+    return true;
+}
+
+// Snowball: escape or a contested pearl. Mid: also a double pearl.
+// Farm: double pearl, or any single pearl once the body is length 5+.
+inline bool sprint_allowed(int macro, int pearls, bool contested, bool escape, int length) {
+    if (escape) {
+        return true;
+    }
+    if (macro == static_cast<int>(Macro::Snowball)) {
+        return pearls >= 1 && contested;
+    }
+    if (pearls >= 2) {
+        return true;
+    }
+    if (macro == static_cast<int>(Macro::FarmLength)) {
+        return pearls >= 1 && length >= 5;
+    }
+    return pearls == 1 && contested;
+}
+
+inline bool claim_live(int claim_round, int round, bool tile_empty) {
+    if (claim_round < 0 || tile_empty) {
+        return false;
+    }
+    return round - claim_round <= 40;
+}
+
+inline int sector_axis(int size) {
+    int count = size / 8;
+    if (count < 2) {
+        count = 2;
+    }
+    if (count > 4) {
+        count = 4;
+    }
+    return count;
+}
+
+inline int sector_index(int x, int y, int width, int height, int cols, int rows) {
+    if (width <= 0 || height <= 0 || cols <= 0 || rows <= 0) {
+        return 0;
+    }
+    int sx = x * cols / width;
+    int sy = y * rows / height;
+    if (sx < 0) {
+        sx = 0;
+    }
+    if (sy < 0) {
+        sy = 0;
+    }
+    if (sx >= cols) {
+        sx = cols - 1;
+    }
+    if (sy >= rows) {
+        sy = rows - 1;
+    }
+    return sy * cols + sx;
+}
+
+inline bool sector_is_outer(int x, int y, int width, int height, int cols, int rows) {
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+    int sx = x * cols / width;
+    int sy = y * rows / height;
+    if (sx >= cols) {
+        sx = cols - 1;
+    }
+    if (sy >= rows) {
+        sy = rows - 1;
+    }
+    if (sx < 0) {
+        sx = 0;
+    }
+    if (sy < 0) {
+        sy = 0;
+    }
+    return sx == 0 || sy == 0 || sx == cols - 1 || sy == rows - 1;
+}
+
+// Take a portal when the long way around is at least three steps longer.
+inline bool portal_shortcut(int around_steps, int portal_steps) {
+    return portal_steps >= 0 && around_steps >= portal_steps + 3;
 }
 
 // Child is born at the tail, facing away from the parent. It needs two free
