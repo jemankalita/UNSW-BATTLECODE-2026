@@ -11,21 +11,9 @@ static constexpr int DIR_E = 1;
 static constexpr int DIR_S = 2;
 static constexpr int DIR_W = 3;
 
-static constexpr int KIND_PEARL = 1;
-static constexpr int KIND_ENEMY = 2;
-static constexpr int KIND_CLAIM = 3;
-static constexpr int KIND_SECTOR = 4;
-static constexpr int KIND_SCORER = 5;
-
-// Tuned to the bundled ladder maps:
-//   Snowball   area <= 520   Arena, Colosseum, Default Small, Devil
-//   MidContest area <= 1100  Trophy, Queen Of Spades, Default
-//   FarmLength area >  1100  Trauma, Stronghold, Schooltime, Big Empty
-enum class Macro {
-    Snowball = 0,
-    MidContest = 1,
-    FarmLength = 2,
-};
+// Sonar message kinds. A KING message names the longest ally the sender
+// knows of: where its head was, its length, its id, and when.
+static constexpr int KIND_KING = 3;
 
 static constexpr std::uint64_t SONAR_KEY = 0xA31B57C9E2046DF1ull;
 static constexpr std::uint64_t SONAR_MUL = 0x9E3779B97F4A7C15ull;
@@ -187,321 +175,146 @@ inline int sonar_age(int current_round, int message_round_mod) {
     return age;
 }
 
-// Only a short dragon rams a clearly longer enemy. The last dragon on our team never does:
-// dying with it is a draw at best, and a loss if they still have dragons.
-// Snowball farmers may ram a little more freely (self <= 5, enemy at least self+2).
-inline bool worth_trade(int self_len, int enemy_len, int allies, bool snowball) {
+// Every map is symmetric one of three ways; which one is for us to find out.
+static constexpr int SYM_FLIP_X = 0;  // (x, y) <-> (w-1-x, y)
+static constexpr int SYM_FLIP_Y = 1;  // (x, y) <-> (x, h-1-y)
+static constexpr int SYM_ROTATE = 2;  // (x, y) <-> (w-1-x, h-1-y)
+static constexpr int SYM_KINDS = 3;
+
+inline Point mirror_tile(int kind, int x, int y, int width, int height) {
+    Point p;
+    p.x = kind == SYM_FLIP_Y ? x : width - 1 - x;
+    p.y = kind == SYM_FLIP_X ? y : height - 1 - y;
+    p.ok = true;
+    return p;
+}
+
+// The side of the mirrored tile that the mirror of side 'dir' lands on.
+inline int mirror_dir(int kind, int dir) {
+    bool horizontal = dir == DIR_E || dir == DIR_W;
+    bool flips = kind == SYM_ROTATE || (kind == SYM_FLIP_X && horizontal) || (kind == SYM_FLIP_Y && !horizontal);
+    return flips ? opposite_dir(dir) : dir;
+}
+
+inline int manhattan(int x1, int y1, int x2, int y2, int width, int height) {
+    return torus_span(x1, x2, width) + torus_span(y1, y2, height);
+}
+
+static constexpr int NEVER = 1 << 28;
+
+// Moves after this one until our own segment 'index' (0 is the head) has
+// left its tile, for a body of 'length' that does not eat on the way. At the
+// t-th move the engine checks the board before the tail steps, so the
+// current tail is still a wall: segment i is gone only once t > length - i.
+inline int unlock_time(int length, int index) {
+    if (index <= 0) {
+        return NEVER;
+    }
+    return length - index + 1;
+}
+
+// Reachable room a head needs to count a move as safe: enough tiles for the
+// whole body to follow it, plus one to keep moving. Other dragons keep
+// moving too, so even a tiny dragon wants a little open water.
+static constexpr int MIN_ROOM = 10;
+
+inline int room_needed(int length) {
+    return length + 1 > MIN_ROOM ? length + 1 : MIN_ROOM;
+}
+
+// Moving into an enemy head kills both dragons. Worth it when trading up by a
+// clear margin, never for our last dragon (that is at best a draw), and
+// always when every other move is death anyway.
+inline bool worth_ram(int self_len, int enemy_len, int allies, bool cornered) {
+    if (cornered) {
+        return true;
+    }
     if (allies <= 1) {
-        return false;
-    }
-    if (snowball) {
-        if (self_len > 5) {
-            return false;
-        }
-        return enemy_len >= self_len + 2;
-    }
-    if (self_len > 6) {
         return false;
     }
     return enemy_len >= self_len + 3;
 }
 
-// No legal step remains. Ramming their head can draw the game or trade up.
-inline bool trapped_ram(int self_len, int enemy_len, int allies) {
-    if (allies <= 1) {
-        return true;
-    }
-    return enemy_len + 1 >= self_len;
-}
-
-// Sprint costs one segment per extra step. Take that trade for two pearls,
-// a contested pearl, or an escape. Otherwise walk.
-inline int plan_score(int pearls, int steps, int dist_before, int dist_after, bool contested, bool escape) {
-    if (steps == 2) {
-        bool allow = escape || pearls >= 2 || (pearls == 1 && contested);
-        if (!allow) {
-            return -1000000000;
-        }
-    }
-    if (steps < 1) {
-        return -1000000000;
-    }
-    int score = pearls * 5000 - (steps - 1) * 3500;
-    score += (dist_before - dist_after) * 100;
-    return score;
-}
-
-inline bool edge_blocked(bool seen, bool kelp) {
-    return seen && kelp;
-}
-
-inline bool refuse_eat(int exits) {
-    return exits < 1;
-}
-
-// Length >= 8 needs two exits after the bite. Shorter dragons only refuse a dead end.
-inline bool long_body_refuse_eat(int exits, int length) {
-    if (length >= 8) {
-        return exits < 2;
-    }
-    return exits < 1;
-}
-
-// One-exit corridor with an enemy head within chebyshev 3. Eating is allowed
-// only when the landing still has two exits (a one-exit landing never qualifies).
-inline bool corridor_refuse(int exits, int enemy_dist, bool eating_pearl) {
-    if (exits != 1 || enemy_dist > 3) {
-        return false;
-    }
-    if (eating_pearl && exits >= 2) {
-        return false;
-    }
-    return true;
-}
-
-// Both sprint edges must already have been seen and must not be kelp.
-inline bool sprint_edges_open(bool seen_first, bool kelp_first, bool seen_second, bool kelp_second) {
-    return seen_first && !kelp_first && seen_second && !kelp_second;
-}
-
-// Longer dragons must not step next to a shorter enemy head: that enemy will ram.
-inline bool avoid_enemy_head(int self_len, int enemy_len, int allies) {
-    if (allies <= 1) {
-        return true;
-    }
-    return !worth_trade(self_len, enemy_len, allies, false);
-}
-
-// Near-equal long bodies should step apart instead of offering a head-to-head.
-inline bool peer_threat(int self_len, int enemy_len) {
-    if (self_len < 8) {
-        return false;
-    }
-    int delta = self_len - enemy_len;
-    if (delta < 0) {
-        delta = -delta;
-    }
-    return delta <= 2;
-}
-
-inline int avoid_radius(int self_len, bool scorer) {
-    if (scorer && self_len >= 12) {
-        return 2;
-    }
-    return 1;
-}
-
-inline Macro classify_macro(int width, int height) {
-    int area = width * height;
-    if (area <= 520) {
-        return Macro::Snowball;
-    }
-    if (area <= 1100) {
-        return Macro::MidContest;
-    }
-    return Macro::FarmLength;
-}
-
-struct MapPolicy {
-    Macro macro;
-    int split_min;
-    int unit_cap;
-    int scorer_min_length;
-    int scorer_stop_round;
-    int pearl_horizon;
-    int sector_prefer;
-    bool portal_bfs;
-    bool outer_first;
-};
-
-inline int split_min_length(int width, int height, int round) {
-    Macro macro = classify_macro(width, height);
-    if (macro == Macro::Snowball) {
-        return 3;
-    }
-    if (macro == Macro::FarmLength && round >= 200) {
-        return 6;
-    }
-    return 4;
-}
-
-inline int unit_cap(int width, int height) {
-    Macro macro = classify_macro(width, height);
-    if (macro == Macro::Snowball) {
-        return 12;
-    }
-    if (macro == Macro::MidContest) {
-        return 16;
-    }
-    return 28;
-}
-
-inline MapPolicy make_policy(int width, int height, int portal_pairs, int round) {
-    MapPolicy policy;
-    policy.macro = classify_macro(width, height);
-    policy.split_min = split_min_length(width, height, round);
-    policy.unit_cap = unit_cap(width, height);
-    policy.scorer_min_length = 0;
-    policy.scorer_stop_round = 100000;
-    policy.pearl_horizon = 12;
-    policy.sector_prefer = 0;
-    policy.portal_bfs = portal_pairs > 0;
-    policy.outer_first = false;
-    if (policy.macro == Macro::Snowball) {
-        policy.pearl_horizon = 8;
-    } else if (policy.macro == Macro::MidContest) {
-        policy.scorer_min_length = 10;
-        policy.scorer_stop_round = 300;
-        policy.pearl_horizon = 12;
-        policy.sector_prefer = 1;
-        policy.outer_first = true;
-        policy.portal_bfs = true;
-    } else {
-        policy.scorer_min_length = 12;
-        policy.scorer_stop_round = 250;
-        policy.pearl_horizon = 20;
-        policy.sector_prefer = 2;
-        policy.portal_bfs = portal_pairs > 0;
-    }
-    return policy;
-}
-
-struct AllySnap {
-    int id;
-    int length;
-};
-
-// Longest ally at or above the length gate. Ties go to the lowest id.
-// Snowball passes min_length <= 0 and never designates a scorer.
-inline int designated_scorer(AllySnap const* allies, int count, int round, int min_length) {
-    if (min_length <= 0 || round < 80) {
-        return -1;
-    }
-    int best_id = -1;
-    int best_len = -1;
-    for (int i = 0; i < count; ++i) {
-        int len = allies[i].length;
-        int id = allies[i].id;
-        if (len < min_length) {
-            continue;
-        }
-        if (best_id < 0 || len > best_len || (len == best_len && id < best_id)) {
-            best_id = id;
-            best_len = len;
-        }
-    }
-    return best_id;
-}
-
-inline bool want_split(int length, int allies, int round, bool pearl_adjacent, bool threatened,
-                       bool is_scorer, bool child_room, int width, int height) {
-    if (pearl_adjacent || threatened || is_scorer || !child_room) {
-        return false;
-    }
-    MapPolicy policy = make_policy(width, height, 0, round);
-    if (allies >= policy.unit_cap) {
-        return false;
-    }
-    int need = policy.split_min;
-    if (policy.macro != Macro::Snowball && round < 60 && allies < 6 && need > 3) {
-        need = 3;
-    }
-    if (length < need) {
-        return false;
-    }
-    if (policy.macro == Macro::Snowball && round > 100 && allies >= 8) {
-        return false;
-    }
-    return true;
-}
-
-// Snowball: escape or a contested pearl. Mid: also a double pearl.
-// Farm: double pearl, or any single pearl once the body is length 5+.
-inline bool sprint_allowed(int macro, int pearls, bool contested, bool escape, int length) {
-    if (escape) {
-        return true;
-    }
-    if (macro == static_cast<int>(Macro::Snowball)) {
-        return pearls >= 1 && contested;
-    }
-    if (pearls >= 2) {
-        return true;
-    }
-    if (macro == static_cast<int>(Macro::FarmLength)) {
-        return pearls >= 1 && length >= 5;
-    }
-    return pearls == 1 && contested;
-}
-
-inline bool claim_live(int claim_round, int round, bool tile_empty) {
-    if (claim_round < 0 || tile_empty) {
-        return false;
-    }
-    return round - claim_round <= 40;
-}
-
-inline int sector_axis(int size) {
-    int count = size / 8;
-    if (count < 2) {
-        count = 2;
-    }
-    if (count > 4) {
-        count = 4;
-    }
-    return count;
-}
-
-inline int sector_index(int x, int y, int width, int height, int cols, int rows) {
-    if (width <= 0 || height <= 0 || cols <= 0 || rows <= 0) {
+// Expected cost of ending a move where an enemy head can reach ours next
+// turn: 'reach' 1 is a plain step, 2 needs a sprint. A ram costs our whole
+// length, and a rational enemy rams when it is not the bigger loser.
+inline int ram_threat(int self_len, int enemy_len, int allies, int reach) {
+    if (allies > 1 && enemy_len >= self_len + 3) {
         return 0;
     }
-    int sx = x * cols / width;
-    int sy = y * rows / height;
-    if (sx < 0) {
-        sx = 0;
+    int stake = 40 + 12 * self_len;
+    if (allies <= 1) {
+        stake *= 3;
     }
-    if (sy < 0) {
-        sy = 0;
+    if (enemy_len > self_len) {
+        stake /= 2;
     }
-    if (sx >= cols) {
-        sx = cols - 1;
+    if (reach >= 2) {
+        stake /= 4;
     }
-    if (sy >= rows) {
-        sy = rows - 1;
-    }
-    return sy * cols + sx;
+    return stake;
 }
 
-inline bool sector_is_outer(int x, int y, int width, int height, int cols, int rows) {
-    if (width <= 0 || height <= 0) {
+// Chance, in percent, that a remembered tile holds a pearl when we arrive.
+// Pearls stay until eaten, so a tile whose countdown has run out is likely
+// full; memory goes stale as other dragons graze.
+inline int pearl_chance(bool seen, bool pearl, int age, int spawn_round, int arrive_round, int prior) {
+    if (!seen) {
+        return prior;
+    }
+    int keep = 100 - age / 2;
+    if (keep < 25) {
+        keep = 25;
+    }
+    if (pearl) {
+        return age == 0 ? 100 : 90 * keep / 100;
+    }
+    if (spawn_round < 0 || arrive_round < spawn_round) {
+        return 0;
+    }
+    int since = arrive_round - spawn_round;
+    int fresh = since < age ? since : age;
+    int chance = 85 - fresh / 3;
+    return chance < 20 ? 20 : chance;
+}
+
+// Largest team a map can feed: one dragon per 'tiles_each' tiles, at least
+// a handful, never past the engine's unit limit. More heads graze more
+// pearls a round, and more bodies make the team hard to wipe out.
+inline int team_cap(int width, int height, int unit_limit, int tiles_each) {
+    int cap = width * height / (tiles_each > 0 ? tiles_each : 1);
+    if (cap < 4) {
+        cap = 4;
+    }
+    return cap < unit_limit ? cap : unit_limit;
+}
+
+// Split off a two-segment farmer while the team is small and the game young.
+inline bool want_split(int length, int units, int cap, int round, int split_len, int last_round) {
+    if (round > last_round || units >= cap) {
         return false;
     }
-    int sx = x * cols / width;
-    int sy = y * rows / height;
-    if (sx >= cols) {
-        sx = cols - 1;
-    }
-    if (sy >= rows) {
-        sy = rows - 1;
-    }
-    if (sx < 0) {
-        sx = 0;
-    }
-    if (sy < 0) {
-        sy = 0;
-    }
-    return sx == 0 || sy == 0 || sx == cols - 1 || sy == rows - 1;
+    return length >= split_len;
 }
 
-// Take a portal when the long way around is at least three steps longer.
-inline bool portal_shortcut(int around_steps, int portal_steps) {
-    return portal_steps >= 0 && around_steps >= portal_steps + 3;
+// The team's king is its longest dragon, ties to the lower id, so every
+// dragon that hears the same news crowns the same one.
+inline bool better_king(int len_a, int id_a, int len_b, int id_b) {
+    return len_a != len_b ? len_a > len_b : id_a < id_b;
 }
 
-// Child is born at the tail, facing away from the parent. It needs two free
-// neighbours besides the parent segment or it dies on its first turn.
-inline bool child_has_room(int open_from_tail) {
-    return open_from_tail >= 2;
+// The tiebreak at the round limit is the longest single dragon. Late in the
+// game the rest of the team dies beside the king, and every second segment
+// of a dead dragon crystallises into a pearl for the king to eat. A few
+// dragons are kept back so the team cannot be wiped out.
+inline bool feeding_time(int round, int feed_round, int units, int keep) {
+    return round >= feed_round && units > keep;
+}
+
+// A feeder only helps if it arrives with time for the king to eat what it
+// leaves: the walk there, plus about a move for each pearl its body drops.
+inline bool can_feed_in_time(int distance, int length, int round, int last_round) {
+    return round + distance + (length + 1) / 2 + 2 <= last_round;
 }
 
 }  // namespace logic

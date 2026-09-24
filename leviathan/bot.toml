@@ -1,4 +1,4 @@
-# leviathan v3 — map-policy swarm+scorer, portals, claims
+# leviathan v4 — swarm, safe look-ahead, symmetry, king feeding
 # created by `unswbc init`
 [project]
 language = "c++"
