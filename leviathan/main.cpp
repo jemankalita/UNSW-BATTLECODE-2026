@@ -1,1360 +1,920 @@
 #include "helper.hpp"
+#include "king.hpp"
 #include "logic.hpp"
+#include "tuning.hpp"
+#include "world.hpp"
 
-#include <array>
+#include <algorithm>
 #include <cstdint>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace {
 
-struct Cell {
-    bool seen = false;
-    bool pearl = false;
-    int seen_round = -1;
-    int spawn_round = -1;
-    bool kelp[4] = {};
-    bool edge_seen[4] = {};
-    int portal[4] = {-1, -1, -1, -1};
-    int claimed_by = -1;
-    int claim_round = -1;
-};
+using logic::NEVER;
 
-struct Head {
+// Pull of one sure pearl on the tile a move lands on. Everything else in a
+// plan's score is measured against this.
+constexpr long long PEARL = 1000000;
+constexpr long long THREAT_SCALE = PEARL / 50;
+constexpr long long ROOM_STEP = PEARL / 50;
+constexpr long long STRAIGHT = PEARL / 20;
+constexpr long long PORTAL_RISK = PEARL / 2;
+constexpr int PORTAL_FRESH = 4;
+constexpr long long UNSAFE = 1000000000000LL;
+constexpr int VALUE_DEPTH = 60;
+constexpr int KAMIKAZE_LEN = 5;
+constexpr int SURVIVE_DEPTH = 40;
+constexpr int SURVIVE_BUDGET = 4000;
+constexpr int HEAD_REACH = 2;
+constexpr int FEED_RANGE = 3;
+constexpr long long CROWD = PEARL / 8;
+
+// Another dragon's head seen this turn.
+struct Other {
+    int id = 0;
+    bool enemy = false;
     int x = 0;
     int y = 0;
-    int id = 0;
-    int len = 0;
-    bool enemy = false;
+    int len = 0;  // segments in view: a lower bound on its length
 };
 
-struct Step {
-    int dir = 0;
-    logic::Point dest{};
-    bool pearl = false;
+// One candidate action: a walk of one or more steps.
+struct Plan {
+    std::vector<int> dirs;
+    std::vector<int> cells;  // tile after each step
+    int length = 0;          // our length once it is done
+    int eaten = 0;
+    int room = 0;
+    int lasts = 0;           // turns the look-ahead could keep moving
+    bool safe = false;
+    bool portal = false;
+    bool portal_blind = false;  // out of view, and a dragon stood there lately
+    bool explore = false;       // through a portal whose far end we have never seen
+    int ram_len = 0;         // enemy length if the last step rams a head
+    long long score = 0;
 };
+
+unswbc::Direction to_direction(int dir) {
+    static unswbc::Direction::Value const values[] = {
+        unswbc::Direction::NORTH, unswbc::Direction::EAST, unswbc::Direction::SOUTH, unswbc::Direction::WEST};
+    return unswbc::Direction(values[dir & 3]);
+}
+
+int dir_index(unswbc::Direction direction) {
+    switch (direction.value) {
+    case unswbc::Direction::NORTH: return logic::DIR_N;
+    case unswbc::Direction::EAST: return logic::DIR_E;
+    case unswbc::Direction::SOUTH: return logic::DIR_S;
+    default: return logic::DIR_W;
+    }
+}
 
 class Brain {
   public:
-    explicit Brain(int width, int height)
-        : width_(width), height_(height), cells_(static_cast<std::size_t>(width * height)) {
-        cols_ = logic::sector_axis(width_);
-        rows_ = logic::sector_axis(height_);
-        int sectors = cols_ * rows_;
-        sector_owner_.assign(static_cast<std::size_t>(sectors), -1);
-        sector_round_.assign(static_cast<std::size_t>(sectors), -1);
-        sector_visit_.assign(static_cast<std::size_t>(sectors), -1000);
+    Brain(int width, int height)
+        : map_(width, height), w_(width), h_(height), n_(width * height),
+          occ_(static_cast<std::size_t>(n_), -1), occ_enemy_(static_cast<std::size_t>(n_), 0),
+          threat_(static_cast<std::size_t>(n_), 0), mark_(static_cast<std::size_t>(n_), 0) {
+        long long weight = PEARL;
+        for (int t = 0; t <= VALUE_DEPTH; ++t) {
+            gamma_.push_back(weight);
+            weight = weight * tuning::GAMMA / 100;
+        }
     }
 
     void act(unswbc::Controller& ct, unswbc::Game& game) {
-        round_ = game.get_round_num();
-        length_ = ct.get_length();
-        allies_ = ct.get_unit_count();
-        my_id_ = ct.get_id();
-        facing_ = dir_index(ct.get_dir());
-        here_ = ct.get_position();
-        enemy_heads_.clear();
-        ally_heads_.clear();
+        begin_turn(ct, game);
+        if (feed_king(ct)) {
+            return;
+        }
+        std::vector<Plan> plans = walks(1);
+        for (Plan& plan : plans) {
+            judge(plan);
+        }
+        bool any_safe = best_of(plans, true) != nullptr;
 
-        observe(ct);
-        hear(ct);
-        policy_ = logic::make_policy(width_, height_, portal_pairs_, round_);
-        refresh_book();
-        own_sector(here_.x, here_.y);
-        scorer_ = compute_scorer();
-        speak(ct);
-
-        std::vector<logic::Point> body = trace_body(ct);
-        tail_known_ = static_cast<int>(body.size()) == length_ && length_ >= 2;
-        if (tail_known_) {
-            tail_ = body.back();
-            if (body.size() >= 2) {
-                tail_neck_ = body[body.size() - 2];
-                tail_neck_ok_ = true;
-            } else {
-                tail_neck_ok_ = false;
+        Plan const* ram = best_ram(plans, !any_safe);
+        if (ram != nullptr) {
+            commit(ct, *ram, "ram");
+            return;
+        }
+        if (any_safe && try_split(ct, *best_of(plans, true))) {
+            return;
+        }
+        if (!any_safe) {
+            std::vector<Plan> sprints = walks(2);
+            for (Plan& plan : sprints) {
+                judge(plan);
             }
-        } else {
-            tail_neck_ok_ = false;
+            Plan const* ram2 = best_ram(sprints, true);
+            Plan const* escape = best_of(sprints, true);
+            if (escape != nullptr) {
+                commit(ct, *escape, "escape");
+                return;
+            }
+            if (ram2 != nullptr) {
+                commit(ct, *ram2, "last ram");
+                return;
+            }
         }
-
-        std::vector<Step> raw = safe_steps(ct, here_.x, here_.y, facing_, true);
-        std::vector<Step> safe = filter_steps(ct, raw, true, true);
-        if (safe.empty()) {
-            safe = filter_steps(ct, raw, true, false);
-        }
-        if (safe.empty()) {
-            safe = filter_steps(ct, raw, false, false);
-        }
-        if (safe.empty()) {
-            safe = raw;
-        }
-
-        Step pearl = best_pearl_step(ct, safe);
-        if (pearl.dir >= 0 && !bad_bite(ct, pearl) && !scorer_skips_pearl(pearl)) {
-            commit(ct, pearl.dir, "eat");
+        Plan const* pick = best_of(plans, false);
+        if (pick != nullptr) {
+            commit(ct, *pick, pick->safe ? "farm" : "squeeze");
             return;
         }
-
-        int kill = ram_dir(ct, false);
-        if (kill >= 0 && !scorer_) {
-            commit(ct, kill, "ram");
-            return;
-        }
-
-        Step sprint = best_sprint(ct, safe, safe.empty());
-        if (sprint.dir >= 0) {
-            commit_sprint(ct, sprint);
-            return;
-        }
-
-        bool threatened = nearest_enemy_dist() <= 2;
-        bool pearl_here = pearl.dir >= 0;
-        bool room = split_is_safe(ct, raw);
-        bool scorer_lock = scorer_ || protect_grower();
-        if (logic::want_split(length_, allies_, round_, pearl_here, threatened, scorer_lock, room, width_, height_) &&
-            ct.can_split(2)) {
-            ct.do_split(2);
-            ct.set_indicator_string("split");
-            remember(here_.x, here_.y);
-            return;
-        }
-
-        int bfs_dir = bfs_dir_toward_goal(ct);
-        if (bfs_dir >= 0 && step_is_safe(safe, bfs_dir) && !grower_walks_into_enemy(bfs_dir)) {
-            commit(ct, bfs_dir, scorer_ ? "score" : "farm");
-            return;
-        }
-
-        int roam = pick_roam(safe, length_ >= 8 || nearest_enemy_dist() <= 3);
-        if (roam >= 0) {
-            commit(ct, roam, scorer_ ? "score" : "farm");
-            return;
-        }
-
-        if (sprint.dir < 0) {
-            sprint = best_sprint(ct, safe, true);
-        }
-        if (sprint.dir >= 0) {
-            commit_sprint(ct, sprint);
-            return;
-        }
-
-        int ram = ram_dir(ct, true);
-        if (ram >= 0) {
-            commit(ct, ram, "ram");
-            return;
-        }
-        int last = desperate_dir(ct);
-        ct.make_move(from_index(last));
+        ct.make_move(to_direction(facing_));
         ct.set_indicator_string("stuck");
     }
 
   private:
-    int width_;
-    int height_;
-    int cols_ = 2;
-    int rows_ = 2;
+    world::Map map_;
+    int w_;
+    int h_;
+    int n_;
     int round_ = 1;
-    int length_ = 2;
-    int allies_ = 1;
-    int my_id_ = 0;
+    int len_ = 2;
+    int id_ = 0;
+    int units_ = 1;
+    int limit_ = 64;
     int facing_ = logic::DIR_N;
-    unswbc::Position here_{};
-    bool tail_known_ = false;
-    bool tail_neck_ok_ = false;
-    logic::Point tail_{};
-    logic::Point tail_neck_{};
-    std::vector<Cell> cells_;
-    std::unordered_map<int, std::vector<logic::PortalSide>> portals_;
-    std::vector<Head> enemy_heads_;
-    std::vector<Head> ally_heads_;
-    std::vector<int> sector_owner_;
-    std::vector<int> sector_round_;
-    std::vector<int> sector_visit_;
-    logic::MapPolicy policy_{};
-    bool scorer_ = false;
-    bool known_pearl_ = false;
-    bool outer_ready_ = false;
-    int portal_pairs_ = 0;
-    int hint_x_ = -1;
-    int hint_y_ = -1;
-    int hint_len_ = 0;
-    int hint_round_ = -1;
-    int scorer_hint_id_ = -1;
-    int scorer_hint_len_ = 0;
-    int scorer_hint_round_ = -100;
-    int last_claim_x_ = -1;
-    int last_claim_y_ = -1;
-    int last_claim_round_ = -100;
-    int history_[8] = {};
-    int history_n_ = 0;
+    int head_ = 0;
+    std::vector<int> occ_;        // dragon id on each tile in view, -1 if none
+    std::vector<char> occ_enemy_;
+    std::vector<int> occ_list_;
+    std::vector<int> body_;       // our tiles, head first
+    std::vector<int> trail_;      // tiles our head has stood on, oldest first
+    std::vector<Other> others_;
+    std::vector<int> threat_;     // cost of ending a move on each tile
+    std::vector<int> threat_list_;
+    std::vector<int> mark_;
+    int stamp_ = 0;
+    std::vector<long long> gamma_;
+    std::vector<int> survive_index_;
+    std::vector<int> entered_;    // look-ahead step that entered each tile, -1 if none
+    int budget_ = 0;
+    int deepest_ = 0;
+    king::Tracker king_;
+    int feed_target_ = -1;        // king's head while we walk over to feed it
+    bool pending_portal_ = false;
+    int portal_from_ = 0;
+    int portal_dir_ = 0;
 
-    Cell& at(int x, int y) {
-        return cells_[static_cast<std::size_t>(y * width_ + x)];
+    int cx(int cell) const { return cell % w_; }
+    int cy(int cell) const { return cell / w_; }
+
+    // ---- reading the turn ----------------------------------------------
+
+    void begin_turn(unswbc::Controller& ct, unswbc::Game& game) {
+        round_ = game.get_round_num();
+        len_ = ct.get_length();
+        id_ = ct.get_id();
+        units_ = ct.get_unit_count();
+        limit_ = game.get_unit_limit();
+        facing_ = dir_index(ct.get_dir());
+        unswbc::Position here = ct.get_position();
+        head_ = map_.index(here.x, here.y);
+        map_.observe(ct, round_);
+        if (pending_portal_) {
+            map_.learn_exit(cx(portal_from_), cy(portal_from_), portal_dir_, here.x, here.y);
+            pending_portal_ = false;
+        }
+        scan_dragons(ct);
+        track_body(ct);
+        map_threats();
+        follow_king(ct);
     }
 
-    Cell const& at(int x, int y) const {
-        return cells_[static_cast<std::size_t>(y * width_ + x)];
-    }
+    // ---- the king ------------------------------------------------------------
 
-    int index_of(int x, int y) const {
-        return y * width_ + x;
-    }
-
-    bool inside(int x, int y) const {
-        return x >= 0 && y >= 0 && x < width_ && y < height_;
-    }
-
-    static int dir_index(unswbc::Direction direction) {
-        switch (direction.value) {
-        case unswbc::Direction::NORTH:
-            return logic::DIR_N;
-        case unswbc::Direction::EAST:
-            return logic::DIR_E;
-        case unswbc::Direction::SOUTH:
-            return logic::DIR_S;
-        default:
-            return logic::DIR_W;
+    void follow_king(unswbc::Controller& ct) {
+        for (std::uint64_t word : ct.get_sonar_messages()) {
+            king_.hear(word, round_);
+        }
+        king_.offer(id_, cx(head_), cy(head_), len_, round_);
+        for (Other const& other : others_) {
+            if (!other.enemy) {
+                king_.offer(other.id, other.x, other.y, other.len, round_);
+            }
+        }
+        king_.expire(round_);
+        king::Report const& crown = king_.best();
+        if (crown.valid && crown.id != id_ && ct.get_tile(unswbc::Position(crown.x, crown.y)) != nullptr &&
+            !ally_head_seen(crown.id)) {
+            king_.forget();
+            king_.offer(id_, cx(head_), cy(head_), len_, round_);
+        }
+        for (int dir = 0; dir < 4; ++dir) {
+            ct.send_sonar(to_direction(dir), king_.message());
+        }
+        feed_target_ = -1;
+        if (!logic::feeding_time(round_, tuning::FEED_ROUND, units_, tuning::FEED_KEEP)) {
+            return;
+        }
+        king::Report const& target = king_.best();
+        if (!target.valid || target.id == id_) {
+            return;
+        }
+        int gap = logic::manhattan(cx(head_), cy(head_), target.x, target.y, w_, h_);
+        if (logic::can_feed_in_time(gap, len_, round_, unswbc::Constants::MAX_ROUNDS)) {
+            feed_target_ = map_.index(target.x, target.y);
         }
     }
 
-    static unswbc::Direction from_index(int dir) {
-        static unswbc::Direction::Value const values[] = {
-            unswbc::Direction::NORTH,
-            unswbc::Direction::EAST,
-            unswbc::Direction::SOUTH,
-            unswbc::Direction::WEST,
-        };
-        return unswbc::Direction(values[dir & 3]);
+    bool ally_head_seen(int id) const {
+        for (Other const& other : others_) {
+            if (!other.enemy && other.id == id) {
+                return true;
+            }
+        }
+        return false;
     }
 
-    void remember_portal(int id, int x, int y, int dir) {
-        std::vector<logic::PortalSide>& sides = portals_[id];
-        for (logic::PortalSide const& side : sides) {
-            if (side.x == x && side.y == y && side.dir == dir) {
+    // Beside the king, a feeder turns into its own neck: it dies on the
+    // spot and every second segment becomes a pearl within the king's reach.
+    bool feed_king(unswbc::Controller& ct) {
+        if (feed_target_ < 0) {
+            return false;
+        }
+        king::Report const& target = king_.best();
+        if (!ally_head_seen(target.id) ||
+            logic::chebyshev(cx(head_), cy(head_), target.x, target.y, w_, h_) > FEED_RANGE) {
+            return false;
+        }
+        ct.make_move(to_direction(logic::opposite_dir(facing_)));
+        ct.set_indicator_string("feed");
+        return true;
+    }
+
+    void scan_dragons(unswbc::Controller& ct) {
+        for (int cell : occ_list_) {
+            occ_[static_cast<std::size_t>(cell)] = -1;
+            occ_enemy_[static_cast<std::size_t>(cell)] = 0;
+        }
+        occ_list_.clear();
+        others_.clear();
+        std::vector<std::pair<int, int>> counts;
+        for (unswbc::Tile const& tile : ct.get_tiles()) {
+            unswbc::DragonPart const* part = tile.get_dragon();
+            if (part == nullptr) {
+                continue;
+            }
+            int cell = map_.index(tile.get_position().x, tile.get_position().y);
+            occ_[static_cast<std::size_t>(cell)] = part->get_id();
+            occ_enemy_[static_cast<std::size_t>(cell)] = part->get_team() == ct.get_team() ? 0 : 1;
+            occ_list_.push_back(cell);
+            bump(counts, part->get_id());
+        }
+        for (int cell : occ_list_) {
+            int id = occ_[static_cast<std::size_t>(cell)];
+            unswbc::Tile const* tile = ct.get_tile(unswbc::Position(cx(cell), cy(cell)));
+            if (id == id_ || tile == nullptr || !tile->get_dragon()->is_head()) {
+                continue;
+            }
+            Other other;
+            other.id = id;
+            other.enemy = occ_enemy_[static_cast<std::size_t>(cell)] != 0;
+            other.x = cx(cell);
+            other.y = cy(cell);
+            for (auto const& entry : counts) {
+                if (entry.first == id) {
+                    other.len = entry.second;
+                }
+            }
+            others_.push_back(other);
+        }
+    }
+
+    static void bump(std::vector<std::pair<int, int>>& counts, int id) {
+        for (auto& entry : counts) {
+            if (entry.first == id) {
+                ++entry.second;
                 return;
             }
         }
-        bool had_pair = sides.size() >= 2;
-        if (sides.size() < 8) {
-            logic::PortalSide side;
-            side.x = x;
-            side.y = y;
-            side.dir = dir;
-            sides.push_back(side);
+        counts.emplace_back(id, 1);
+    }
+
+    // Our body is the last len_ tiles the head stood on. Keeping that trail
+    // lets us know segments that have left the 7x7 window; anything the
+    // window contradicts is rebuilt from what we can see.
+    void track_body(unswbc::Controller& ct) {
+        if (trail_.empty() || trail_.back() != head_) {
+            trail_.push_back(head_);
         }
-        if (!had_pair && sides.size() >= 2) {
-            ++portal_pairs_;
+        body_.clear();
+        for (int i = static_cast<int>(trail_.size()) - 1; i >= 0 && static_cast<int>(body_.size()) < len_; --i) {
+            body_.push_back(trail_[static_cast<std::size_t>(i)]);
+        }
+        if (!body_matches_view(ct)) {
+            body_ = trace_view(ct);
+            trail_.assign(body_.rbegin(), body_.rend());
+        }
+        if (static_cast<int>(trail_.size()) > len_ + 8) {
+            trail_.erase(trail_.begin(), trail_.end() - (len_ + 8));
         }
     }
 
-    void observe(unswbc::Controller& ct) {
-        for (unswbc::Tile const& tile : ct.get_tiles()) {
-            unswbc::Position position = tile.get_position();
-            if (!inside(position.x, position.y)) {
-                continue;
-            }
-            Cell& cell = at(position.x, position.y);
-            cell.seen = true;
-            cell.seen_round = round_;
-            cell.pearl = tile.has_pearl();
-            if (!cell.pearl) {
-                cell.claimed_by = -1;
-                cell.claim_round = -1;
-            }
-            int pearl_time = tile.get_pearl_time();
-            cell.spawn_round = pearl_time < 0 ? -1 : round_ + pearl_time;
-
-            for (int dir = 0; dir < 4; ++dir) {
-                unswbc::Edge const& edge = tile.get_edge(from_index(dir));
-                cell.edge_seen[dir] = true;
-                cell.kelp[dir] = edge.get_edge_type() == unswbc::EdgeType::KELP;
-                logic::Point next = logic::step_wrap(position.x, position.y, dir, width_, height_);
-                Cell& other = at(next.x, next.y);
-                other.kelp[logic::opposite_dir(dir)] = cell.kelp[dir];
-                other.edge_seen[logic::opposite_dir(dir)] = true;
-                int opposite = logic::opposite_dir(dir);
-                if (edge.is_portal()) {
-                    cell.portal[dir] = edge.get_portal_id();
-                    other.portal[opposite] = edge.get_portal_id();
-                    remember_portal(edge.get_portal_id(), position.x, position.y, dir);
-                    remember_portal(edge.get_portal_id(), next.x, next.y, opposite);
-                } else {
-                    cell.portal[dir] = -1;
-                    other.portal[opposite] = -1;
-                }
-            }
-
-            unswbc::DragonPart const* part = tile.get_dragon();
-            if (part == nullptr || !part->is_head() || part->get_id() == my_id_) {
-                continue;
-            }
-            Head head;
-            head.x = position.x;
-            head.y = position.y;
-            head.id = part->get_id();
-            head.enemy = part->get_team() != ct.get_team();
-            head.len = count_segments(ct, head.id);
-            if (head.enemy) {
-                enemy_heads_.push_back(head);
-            } else {
-                ally_heads_.push_back(head);
+    bool body_matches_view(unswbc::Controller& ct) const {
+        int mine_in_view = 0;
+        for (int cell : occ_list_) {
+            if (occ_[static_cast<std::size_t>(cell)] == id_) {
+                ++mine_in_view;
             }
         }
+        int claimed_in_view = 0;
+        for (int cell : body_) {
+            if (ct.get_tile(unswbc::Position(cx(cell), cy(cell))) == nullptr) {
+                continue;
+            }
+            if (occ_[static_cast<std::size_t>(cell)] != id_) {
+                return false;
+            }
+            ++claimed_in_view;
+        }
+        return claimed_in_view == mine_in_view;
     }
 
-    static int count_segments(unswbc::Controller& ct, int id) {
-        int count = 0;
-        for (unswbc::Tile const& tile : ct.get_tiles()) {
-            unswbc::DragonPart const* part = tile.get_dragon();
-            if (part != nullptr && part->get_id() == id) {
-                ++count;
-            }
-        }
-        return count;
-    }
-
-    void hear(unswbc::Controller& ct) {
-        for (std::uint64_t word : ct.get_sonar_messages()) {
-            logic::SonarMsg message = logic::unpack_sonar(word);
-            if (!message.ok) {
-                continue;
-            }
-            int age = logic::sonar_age(round_, message.round_mod);
-            if (age > 25) {
-                continue;
-            }
-            if (message.kind == logic::KIND_SECTOR) {
-                if (message.x >= 0 && message.y >= 0 && message.x < cols_ && message.y < rows_) {
-                    int index = message.y * cols_ + message.x;
-                    int when = round_ - age;
-                    if (when >= sector_round_[static_cast<std::size_t>(index)]) {
-                        sector_owner_[static_cast<std::size_t>(index)] = message.id;
-                        sector_round_[static_cast<std::size_t>(index)] = when;
-                    }
-                }
-                continue;
-            }
-            if (message.kind == logic::KIND_SCORER) {
-                scorer_hint_id_ = message.id;
-                scorer_hint_len_ = message.aux;
-                scorer_hint_round_ = round_ - age;
-                continue;
-            }
-            if (!inside(message.x, message.y)) {
-                continue;
-            }
-            if (message.kind == logic::KIND_PEARL || message.kind == logic::KIND_CLAIM) {
-                Cell& cell = at(message.x, message.y);
-                if (cell.seen_round == round_ && !cell.pearl) {
-                    continue;
-                }
-                if (cell.seen_round != round_) {
-                    cell.pearl = true;
-                }
-                if (message.kind == logic::KIND_CLAIM) {
-                    int when = round_ - age;
-                    if (cell.claim_round < 0 || when >= cell.claim_round) {
-                        cell.claimed_by = message.id;
-                        cell.claim_round = when;
-                    }
-                }
-            } else if (message.kind == logic::KIND_ENEMY && age <= 15) {
-                hint_x_ = message.x;
-                hint_y_ = message.y;
-                hint_len_ = message.aux;
-                hint_round_ = round_ - age;
-            }
-        }
-    }
-
-    bool sonar_duty() const {
-        int index = logic::sector_index(here_.x, here_.y, width_, height_, cols_, rows_);
-        int allies = allies_ < 1 ? 1 : allies_;
-        return (my_id_ % allies) == (index % allies);
-    }
-
-    void speak(unswbc::Controller& ct) {
-        if (policy_.macro == logic::Macro::Snowball) {
-            speak_pearls(ct);
-            return;
-        }
-        if (scorer_) {
-            for (int dir = 0; dir < 4; ++dir) {
-                send(ct, dir, logic::KIND_SCORER, here_.x, here_.y, length_);
-            }
-        }
-        if (!enemy_heads_.empty() && (sonar_duty() || nearest_enemy_dist() <= 4 || scorer_)) {
-            Head const& head = enemy_heads_.front();
-            send(ct, 0, logic::KIND_ENEMY, head.x, head.y, head.len);
-        } else if (hint_x_ >= 0 && round_ - hint_round_ <= 15 && sonar_duty()) {
-            send(ct, 0, logic::KIND_ENEMY, hint_x_, hint_y_, hint_len_);
-        }
-        if (scorer_ || !sonar_duty()) {
-            return;
-        }
-        int sx = here_.x * cols_ / width_;
-        int sy = here_.y * rows_ / height_;
-        if (sx >= cols_) {
-            sx = cols_ - 1;
-        }
-        if (sy >= rows_) {
-            sy = rows_ - 1;
-        }
-        if ((round_ & 7) == (my_id_ & 7)) {
-            send(ct, 1, logic::KIND_SECTOR, sx, sy, my_id_ & 255);
-        }
-        int px = -1;
-        int py = -1;
-        int best = 1000000;
-        for (unswbc::Tile const& tile : ct.get_tiles()) {
-            if (!tile.has_pearl()) {
-                continue;
-            }
-            unswbc::Position position = tile.get_position();
-            Cell const& cell = at(position.x, position.y);
-            bool foreign = logic::claim_live(cell.claim_round, round_, false) && cell.claimed_by >= 0 &&
-                           cell.claimed_by != my_id_ && round_ - cell.claim_round < 20;
-            if (foreign) {
-                continue;
-            }
-            int dist = logic::chebyshev(here_.x, here_.y, position.x, position.y, width_, height_);
-            if (dist < best) {
-                best = dist;
-                px = position.x;
-                py = position.y;
-            }
-        }
-        if (px < 0) {
-            return;
-        }
-        if (px == last_claim_x_ && py == last_claim_y_ && round_ - last_claim_round_ < 8) {
-            return;
-        }
-        send(ct, facing_, logic::KIND_CLAIM, px, py, length_ & 255);
-        send(ct, logic::right_of(facing_), logic::KIND_CLAIM, px, py, length_ & 255);
-        last_claim_x_ = px;
-        last_claim_y_ = py;
-        last_claim_round_ = round_;
-    }
-
-    void speak_pearls(unswbc::Controller& ct) {
-        int px = -1;
-        int py = -1;
-        int best = 1000000;
-        for (unswbc::Tile const& tile : ct.get_tiles()) {
-            if (!tile.has_pearl()) {
-                continue;
-            }
-            unswbc::Position position = tile.get_position();
-            int dist = logic::chebyshev(here_.x, here_.y, position.x, position.y, width_, height_);
-            if (dist < best) {
-                best = dist;
-                px = position.x;
-                py = position.y;
-            }
-        }
-        for (int dir = 0; dir < 4; ++dir) {
-            if (!enemy_heads_.empty() && dir == 3) {
-                Head const& head = enemy_heads_.front();
-                send(ct, dir, logic::KIND_ENEMY, head.x, head.y, head.len);
-            } else if (px >= 0) {
-                send(ct, dir, logic::KIND_PEARL, px, py, 0);
-            } else if (hint_x_ >= 0 && round_ - hint_round_ <= 15) {
-                send(ct, dir, logic::KIND_ENEMY, hint_x_, hint_y_, hint_len_);
-            }
-        }
-    }
-
-    void send(unswbc::Controller& ct, int dir, int kind, int x, int y, int aux) {
-        if (x > 255 || y > 255) {
-            return;
-        }
-        ct.send_sonar(from_index(dir), logic::pack_sonar(kind, x, y, aux, my_id_, round_));
-    }
-
-    std::vector<logic::Point> trace_body(unswbc::Controller& ct) const {
-        std::vector<logic::Point> body;
-        logic::Point head;
-        head.x = here_.x;
-        head.y = here_.y;
-        head.ok = true;
-        body.push_back(head);
-        logic::Point cursor = logic::step_wrap(here_.x, here_.y, logic::opposite_dir(facing_), width_, height_);
-        for (int i = 1; i < length_; ++i) {
+    std::vector<int> trace_view(unswbc::Controller& ct) const {
+        std::vector<int> body{head_};
+        logic::Point cursor = logic::step_wrap(cx(head_), cy(head_), logic::opposite_dir(facing_), w_, h_);
+        while (static_cast<int>(body.size()) < len_) {
             unswbc::Tile const* tile = ct.get_tile(unswbc::Position(cursor.x, cursor.y));
             if (tile == nullptr || tile->get_dragon() == nullptr) {
                 break;
             }
             unswbc::DragonPart const* part = tile->get_dragon();
-            if (part->get_id() != my_id_ || part->is_head()) {
+            int cell = map_.index(cursor.x, cursor.y);
+            if (part->get_id() != id_ || part->is_head() || std::find(body.begin(), body.end(), cell) != body.end()) {
                 break;
             }
-            body.push_back(cursor);
-            cursor = logic::step_wrap(cursor.x, cursor.y, logic::opposite_dir(dir_index(part->get_dir())), width_, height_);
+            body.push_back(cell);
+            cursor = logic::step_wrap(cursor.x, cursor.y, logic::opposite_dir(dir_index(part->get_dir())), w_, h_);
         }
         return body;
     }
 
-    // Strict for real moves: unseen edges are walls. Optimistic for BFS so we
-    // can path through fog toward remembered pearls (edge_blocked returns false
-    // when the edge has never been seen).
-    logic::Point destination(int x, int y, int dir) {
-        return destination(x, y, dir, true);
-    }
-
-    logic::Point destination(int x, int y, int dir, bool strict) {
-        Cell& cell = at(x, y);
-        bool blocked_edge = strict ? (!cell.edge_seen[dir] || cell.kelp[dir])
-                                   : logic::edge_blocked(cell.edge_seen[dir], cell.kelp[dir]);
-        if (blocked_edge) {
-            logic::Point blocked;
-            blocked.ok = false;
-            blocked.x = x;
-            blocked.y = y;
-            return blocked;
+    // Tiles an enemy head could reach before our next turn, priced by what a
+    // ram there would cost us.
+    void map_threats() {
+        for (int cell : threat_list_) {
+            threat_[static_cast<std::size_t>(cell)] = 0;
         }
-        if (cell.portal[dir] >= 0) {
-            std::vector<logic::PortalSide>& sides = portals_[cell.portal[dir]];
-            return logic::emerge(x, y, dir, width_, height_, sides.data(), static_cast<int>(sides.size()));
-        }
-        return logic::step_wrap(x, y, dir, width_, height_);
-    }
-
-    bool occupied(unswbc::Controller& ct, logic::Point point) const {
-        unswbc::Tile const* tile = ct.get_tile(unswbc::Position(point.x, point.y));
-        return tile != nullptr && tile->get_dragon() != nullptr;
-    }
-
-    bool has_pearl_at(unswbc::Controller& ct, logic::Point point) const {
-        unswbc::Tile const* tile = ct.get_tile(unswbc::Position(point.x, point.y));
-        return tile != nullptr && tile->has_pearl();
-    }
-
-    std::vector<Step> safe_steps(unswbc::Controller& ct, int x, int y, int facing, bool from_head) {
-        std::vector<Step> steps;
-        for (int dir = 0; dir < 4; ++dir) {
-            if (from_head && dir == logic::opposite_dir(facing)) {
+        threat_list_.clear();
+        for (Other const& other : others_) {
+            if (!other.enemy) {
                 continue;
             }
-            if (!from_head && dir == logic::opposite_dir(facing)) {
-                continue;
-            }
-            Cell const& cell = at(x, y);
-            if (cell.portal[dir] >= 0) {
-                if (!policy_.portal_bfs && policy_.macro != logic::Macro::MidContest) {
-                    continue;
+            int start = map_.index(other.x, other.y);
+            std::vector<int> frontier{start};
+            for (int reach = 1; reach <= 2 && !frontier.empty(); ++reach) {
+                std::vector<int> next;
+                for (int cell : frontier) {
+                    for (int dir = 0; dir < 4; ++dir) {
+                        world::Landing land = map_.step(cx(cell), cy(cell), dir, true);
+                        if (!land.ok) {
+                            continue;
+                        }
+                        int to = map_.index(land.x, land.y);
+                        if (occ_[static_cast<std::size_t>(to)] >= 0 && to != head_) {
+                            continue;
+                        }
+                        int cost = logic::ram_threat(len_, other.len, units_, reach);
+                        if (cost > threat_[static_cast<std::size_t>(to)]) {
+                            if (threat_[static_cast<std::size_t>(to)] == 0) {
+                                threat_list_.push_back(to);
+                            }
+                            threat_[static_cast<std::size_t>(to)] = cost;
+                        }
+                        next.push_back(to);
+                    }
                 }
-                logic::Point exit = destination(x, y, dir);
-                if (!exit.ok) {
-                    continue;
-                }
-                unswbc::Tile const* tile = ct.get_tile(unswbc::Position(exit.x, exit.y));
-                if (tile == nullptr || tile->get_dragon() != nullptr) {
-                    continue;
-                }
-                if (portal_exit_risky(exit)) {
-                    continue;
-                }
-                Step step;
-                step.dir = dir;
-                step.dest = exit;
-                step.pearl = tile->has_pearl();
-                steps.push_back(step);
-                continue;
+                frontier.swap(next);
             }
-            logic::Point next = destination(x, y, dir);
-            if (!next.ok) {
-                continue;
-            }
-            unswbc::Tile const* tile = ct.get_tile(unswbc::Position(next.x, next.y));
-            if (tile == nullptr || tile->get_dragon() != nullptr) {
-                continue;
-            }
-            Step step;
-            step.dir = dir;
-            step.dest = next;
-            step.pearl = tile->has_pearl();
-            steps.push_back(step);
         }
-        return steps;
     }
 
-    bool yield_pearl(int x, int y) const {
-        for (Head const& ally : ally_heads_) {
-            if (ally.id <= my_id_ || ally.len <= length_) {
-                continue;
-            }
-            if (logic::chebyshev(ally.x, ally.y, x, y, width_, height_) <= 1) {
-                return true;
-            }
-        }
-        return false;
+    // ---- building and judging plans ---------------------------------------
+
+    bool pearl_now(int cell) const {
+        world::Cell const& c = map_.cell(cell);
+        return c.pearl && c.seen_round == round_;
     }
 
-    bool near_enemy_head(int x, int y) const {
-        int radius = logic::avoid_radius(length_, scorer_);
-        for (Head const& head : enemy_heads_) {
-            int dist = logic::chebyshev(x, y, head.x, head.y, width_, height_);
-            if (dist < 1 || dist > radius) {
-                continue;
-            }
-            if (logic::avoid_enemy_head(length_, head.len, allies_)) {
-                return true;
-            }
+    // Every legal walk of exactly 'steps' steps (a sprint when steps > 1).
+    // Each step is checked against the board as it stands now: nothing we
+    // pass, our own tail included, is treated as vacated during the turn.
+    std::vector<Plan> walks(int steps) {
+        std::vector<Plan> out;
+        if (steps > 1 && len_ <= steps) {
+            return out;
         }
-        return false;
-    }
-
-    bool portal_exit_risky(logic::Point exit) const {
-        for (Head const& head : enemy_heads_) {
-            if (logic::chebyshev(exit.x, exit.y, head.x, head.y, width_, height_) <= 1) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    bool scorer_skips_pearl(Step const& step) const {
-        if (!scorer_ || !step.pearl) {
-            return false;
-        }
-        return enemy_dist_to(step.dest.x, step.dest.y) <= 1;
-    }
-
-    bool compute_scorer() const {
-        if (policy_.scorer_min_length <= 0 || round_ < 80 || length_ < policy_.scorer_min_length) {
-            return false;
-        }
-        logic::AllySnap snaps[32];
-        int count = 0;
-        snaps[count].id = my_id_;
-        snaps[count].length = length_;
-        ++count;
-        for (Head const& ally : ally_heads_) {
-            if (count >= 32) {
-                break;
-            }
-            snaps[count].id = ally.id;
-            snaps[count].length = ally.len;
-            ++count;
-        }
-        if (scorer_hint_id_ >= 0 && scorer_hint_id_ != my_id_ && scorer_hint_len_ > 0 &&
-            round_ - scorer_hint_round_ <= 25 && count < 32) {
-            snaps[count].id = scorer_hint_id_;
-            snaps[count].length = scorer_hint_len_;
-            ++count;
-        }
-        return logic::designated_scorer(snaps, count, round_, policy_.scorer_min_length) == my_id_;
-    }
-
-    bool protect_grower() const {
-        if (policy_.macro == logic::Macro::Snowball || round_ < 80 || allies_ < 6) {
-            return false;
-        }
-        for (Head const& ally : ally_heads_) {
-            if (ally.len > length_) {
-                return false;
-            }
-            if (ally.len == length_ && ally.id < my_id_) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    void own_sector(int x, int y) {
-        int index = logic::sector_index(x, y, width_, height_, cols_, rows_);
-        sector_owner_[static_cast<std::size_t>(index)] = my_id_;
-        sector_round_[static_cast<std::size_t>(index)] = round_;
-        sector_visit_[static_cast<std::size_t>(index)] = round_;
-    }
-
-    void refresh_book() {
-        known_pearl_ = false;
-        int outer_seen = 0;
-        int outer_total = 0;
-        int cells = width_ * height_;
-        for (int i = 0; i < cells; ++i) {
-            Cell& cell = cells_[static_cast<std::size_t>(i)];
-            int x = i % width_;
-            int y = i / width_;
-            bool empty = cell.seen && !cell.pearl;
-            if (cell.claim_round >= 0 && !logic::claim_live(cell.claim_round, round_, empty)) {
-                cell.claimed_by = -1;
-                cell.claim_round = -1;
-                if (!cell.seen) {
-                    cell.pearl = false;
-                }
-            }
-            if (cell.pearl) {
-                known_pearl_ = true;
-            }
-            if (policy_.outer_first && logic::sector_is_outer(x, y, width_, height_, cols_, rows_)) {
-                ++outer_total;
-                if (cell.seen) {
-                    ++outer_seen;
-                }
-            }
-        }
-        outer_ready_ = outer_total > 0 && outer_seen * 2 >= outer_total;
-    }
-
-    std::vector<Step> filter_steps(unswbc::Controller& ct, std::vector<Step> const& raw, bool avoid_heads, bool avoid_corridors) {
-        std::vector<Step> out;
-        for (Step const& step : raw) {
-            if (avoid_heads && near_enemy_head(step.dest.x, step.dest.y)) {
-                continue;
-            }
-            int exits = future_exits(ct, step);
-            if (exits < 1) {
-                continue;
-            }
-            int threat = enemy_dist_to(step.dest.x, step.dest.y);
-            if (policy_.macro == logic::Macro::Snowball && threat > 1) {
-                threat = 100;
-            }
-            if (avoid_corridors && logic::corridor_refuse(exits, threat, step.pearl)) {
-                continue;
-            }
-            if (step.pearl && bad_bite(ct, step)) {
-                continue;
-            }
-            out.push_back(step);
-        }
+        Plan seed;
+        extend(seed, head_, steps, out);
         return out;
     }
 
-    Step best_pearl_step(unswbc::Controller&, std::vector<Step> const& safe) const {
-        Step best;
-        best.dir = -1;
-        int best_dist = 1000000;
-        for (Step const& step : safe) {
-            if (!step.pearl || yield_pearl(step.dest.x, step.dest.y)) {
+    void extend(Plan& plan, int from, int steps_left, std::vector<Plan>& out) {
+        for (int dir = 0; dir < 4; ++dir) {
+            world::Landing land = map_.step(cx(from), cy(from), dir, false);
+            if (land.unknown_exit && plan.dirs.empty() && steps_left == 1) {
+                Plan explore;
+                explore.dirs.push_back(dir);
+                explore.portal = true;
+                explore.explore = true;
+                out.push_back(explore);
                 continue;
             }
-            int dist = logic::chebyshev(here_.x, here_.y, step.dest.x, step.dest.y, width_, height_);
-            if (dist < best_dist) {
-                best_dist = dist;
-                best = step;
+            if (!land.ok || (land.portal && !plan.dirs.empty())) {
+                continue;
+            }
+            int cell = map_.index(land.x, land.y);
+            if (std::find(plan.cells.begin(), plan.cells.end(), cell) != plan.cells.end()) {
+                continue;
+            }
+            int who = occ_[static_cast<std::size_t>(cell)];
+            bool ram = who >= 0 && occ_enemy_[static_cast<std::size_t>(cell)] && is_enemy_head(cell);
+            if (who >= 0 && !(ram && steps_left == 1)) {
+                continue;
+            }
+            Plan next = plan;
+            next.dirs.push_back(dir);
+            next.cells.push_back(cell);
+            next.portal = next.portal || land.portal;
+            if (land.portal && map_.cell(cell).seen_round != round_ &&
+                round_ - map_.cell(cell).occupied_round <= PORTAL_FRESH) {
+                next.portal_blind = true;
+            }
+            if (ram) {
+                next.ram_len = enemy_len_at(cell);
+            } else if (pearl_now(cell)) {
+                ++next.eaten;
+            }
+            if (steps_left == 1) {
+                out.push_back(next);
+            } else if (!ram) {
+                extend(next, cell, steps_left - 1, out);
             }
         }
-        return best;
     }
 
-    bool contested(unswbc::Controller& ct, logic::Point pearl) const {
-        for (unswbc::Tile const& tile : ct.get_tiles()) {
-            unswbc::DragonPart const* part = tile.get_dragon();
-            if (part == nullptr || part->get_team() == ct.get_team()) {
-                continue;
-            }
-            unswbc::Position position = tile.get_position();
-            if (logic::chebyshev(position.x, position.y, pearl.x, pearl.y, width_, height_) <= 2) {
+    bool is_enemy_head(int cell) const {
+        for (Other const& other : others_) {
+            if (other.enemy && map_.index(other.x, other.y) == cell) {
                 return true;
             }
         }
         return false;
     }
 
-    int future_exits(unswbc::Controller& ct, Step const& step) {
-        int exits = 0;
-        for (int dir = 0; dir < 4; ++dir) {
-            if (dir == logic::opposite_dir(step.dir)) {
-                continue;
+    int enemy_len_at(int cell) const {
+        for (Other const& other : others_) {
+            if (map_.index(other.x, other.y) == cell) {
+                return other.len;
             }
-            logic::Point next = destination(step.dest.x, step.dest.y, dir);
-            if (!next.ok || at(step.dest.x, step.dest.y).portal[dir] >= 0) {
-                continue;
-            }
-            bool tail_leaves = tail_known_ && !step.pearl && next.x == tail_.x && next.y == tail_.y;
-            if (occupied(ct, next) && !tail_leaves) {
-                continue;
-            }
-            ++exits;
         }
-        return exits;
+        return 0;
     }
 
-    // A one-exit landing is a lane when that exit itself has a way onward.
-    // It is a pocket when the next tile is closed. Long bodies may eat in the lane.
-    bool bad_bite(unswbc::Controller& ct, Step const& step) {
-        int exits = future_exits(ct, step);
-        if (exits < 1) {
-            return true;
+    // Our body after the plan, head first.
+    std::vector<int> body_after(Plan const& plan) const {
+        std::vector<int> body(plan.cells.rbegin(), plan.cells.rend());
+        for (int cell : body_) {
+            if (static_cast<int>(body.size()) >= plan.length) {
+                break;
+            }
+            body.push_back(cell);
         }
-        if (policy_.macro != logic::Macro::Snowball) {
-            return logic::long_body_refuse_eat(exits, length_);
-        }
-        if (length_ < 8 || exits >= 2) {
-            return false;
-        }
-        return !lane_continues(ct, step);
+        return body;
     }
 
-    bool lane_continues(unswbc::Controller& ct, Step const& step) {
-        int open_dir = -1;
-        for (int dir = 0; dir < 4; ++dir) {
-            if (dir == logic::opposite_dir(step.dir)) {
-                continue;
-            }
-            logic::Point next = destination(step.dest.x, step.dest.y, dir);
-            if (!next.ok || at(step.dest.x, step.dest.y).portal[dir] >= 0) {
-                continue;
-            }
-            bool tail_leaves = tail_known_ && !step.pearl && next.x == tail_.x && next.y == tail_.y;
-            if (occupied(ct, next) && !tail_leaves) {
-                continue;
-            }
-            if (open_dir >= 0) {
-                return true;
-            }
-            open_dir = dir;
-        }
-        if (open_dir < 0) {
-            return false;
-        }
-        logic::Point next = destination(step.dest.x, step.dest.y, open_dir);
-        for (int dir = 0; dir < 4; ++dir) {
-            if (dir == logic::opposite_dir(open_dir)) {
-                continue;
-            }
-            logic::Point beyond = destination(next.x, next.y, dir);
-            if (!beyond.ok || at(next.x, next.y).portal[dir] >= 0) {
-                continue;
-            }
-            if (occupied(ct, beyond)) {
-                continue;
-            }
-            return true;
-        }
-        return false;
-    }
-
-    Step best_sprint(unswbc::Controller& ct, std::vector<Step> const& first, bool escape) {
-        Step best;
-        best.dir = -1;
-        int best_score = -1000000000;
-        if (length_ < 3) {
-            return best;
-        }
-        int macro = static_cast<int>(policy_.macro);
-        Cell const& start = at(here_.x, here_.y);
-        for (Step const& step : first) {
-            bool portal_first = start.portal[step.dir] >= 0;
-            if (portal_first && !escape) {
-                continue;
-            }
-            if (portal_first && portal_exit_risky(step.dest)) {
-                continue;
-            }
-            bool ate = step.pearl;
-            logic::Point freed;
-            freed.ok = tail_known_ && !ate;
-            if (freed.ok) {
-                freed = tail_;
-            }
-            for (int dir2 = 0; dir2 < 4; ++dir2) {
-                if (dir2 == logic::opposite_dir(step.dir)) {
-                    continue;
-                }
-                Cell const& mid = at(step.dest.x, step.dest.y);
-                if (mid.portal[dir2] >= 0) {
-                    continue;
-                }
-                if (!logic::sprint_edges_open(start.edge_seen[step.dir], start.kelp[step.dir], mid.edge_seen[dir2],
-                                              mid.kelp[dir2])) {
-                    continue;
-                }
-                logic::Point second = destination(step.dest.x, step.dest.y, dir2);
-                if (!second.ok || (second.x == step.dest.x && second.y == step.dest.y)) {
-                    continue;
-                }
-                bool freed_here = freed.ok && second.x == freed.x && second.y == freed.y;
-                unswbc::Tile const* tile = ct.get_tile(unswbc::Position(second.x, second.y));
-                if (tile == nullptr) {
-                    continue;
-                }
-                if (tile->get_dragon() != nullptr && !freed_here) {
-                    continue;
-                }
-                if (!escape && near_enemy_head(second.x, second.y)) {
-                    continue;
-                }
-                int pearls = (ate ? 1 : 0) + (tile->has_pearl() ? 1 : 0);
-                if (!escape && length_ < 4 && pearls < 2) {
-                    continue;
-                }
-                // Same dead-end rule as one-step eats: never land on a pearl pocket.
-                Step landing;
-                landing.dir = dir2;
-                landing.dest = second;
-                landing.pearl = tile->has_pearl();
-                if (pearls > 0 && bad_bite(ct, landing)) {
-                    continue;
-                }
-                if (pearls == 0 && future_exits(ct, landing) < 1 && policy_.macro != logic::Macro::Snowball) {
-                    continue;
-                }
-                bool fight = pearls >= 1 && contested(ct, tile->has_pearl() ? second : step.dest);
-                if (!logic::sprint_allowed(macro, pearls, fight, escape, length_)) {
-                    continue;
-                }
-                int score = logic::plan_score(pearls, 2, 2, 0, fight || pearls >= 1, escape);
-                if (pearls == 0 && !escape) {
-                    continue;
-                }
-                if (score > best_score) {
-                    best_score = score;
-                    best.dir = step.dir;
-                    best.dest.x = dir2;
-                    best.dest.y = pearls;
-                    best.pearl = pearls > 0;
-                }
-            }
-        }
-        return best;
-    }
-
-    void commit_sprint(unswbc::Controller& ct, Step const& sprint) {
-        std::vector<unswbc::Direction> dirs;
-        dirs.push_back(from_index(sprint.dir));
-        dirs.push_back(from_index(sprint.dest.x));
-        ct.make_moves(dirs);
-        ct.set_indicator_string(sprint.pearl ? "sprint" : "escape");
-        logic::Point end = destination(here_.x, here_.y, sprint.dir, true);
-        if (!end.ok) {
+    void judge(Plan& plan) {
+        if (plan.explore) {
+            // Whatever lies past an unexplored portal is fresh water. The
+            // engine always lands the head on a real tile; the only risk is
+            // a dragon standing on it, so this counts as safe.
+            plan.safe = threat_[static_cast<std::size_t>(head_)] == 0;
+            plan.lasts = SURVIVE_DEPTH;
+            plan.length = len_;
+            plan.score = static_cast<long long>(tuning::EXPLORE_PORTAL) * PEARL / 10 - crowding(head_) / 2;
             return;
         }
-        logic::Point land = destination(end.x, end.y, sprint.dest.x, true);
-        if (land.ok) {
-            remember(land.x, land.y);
+        int steps = static_cast<int>(plan.dirs.size());
+        plan.length = len_ - (steps - 1) + plan.eaten;
+        if (plan.ram_len > 0) {
+            plan.safe = false;
+            return;
         }
-    }
-
-    int enemy_dist_to(int x, int y) const {
-        int best = 1000000;
-        for (Head const& head : enemy_heads_) {
-            int dist = logic::chebyshev(x, y, head.x, head.y, width_, height_);
-            if (dist < best) {
-                best = dist;
+        std::vector<int> body = body_after(plan);
+        int need = logic::room_needed(plan.length);
+        int pearls = 0;
+        plan.room = flood(body, plan.length, need * 2 + 8, pearls);
+        bool lives = survives(body, plan.length);
+        plan.lasts = lives ? SURVIVE_DEPTH : deepest_;
+        // We cannot see through a portal. A far tile we saw a dragon on
+        // lately may still hold one, so that crossing is a last resort.
+        plan.safe = plan.room >= need + pearls && lives && !plan.portal_blind;
+        int end = plan.cells.back();
+        long long score = value_from(body, plan.length) - static_cast<long long>(steps - 1) * PEARL;
+        for (std::size_t i = 0; i + 1 < plan.cells.size(); ++i) {
+            if (pearl_now(plan.cells[i])) {
+                score += PEARL;
             }
         }
-        return best;
+        score -= static_cast<long long>(threat_[static_cast<std::size_t>(end)]) * THREAT_SCALE;
+        score += static_cast<long long>(std::min(plan.room, need * 2 + 8)) * ROOM_STEP;
+        if (plan.dirs.front() == facing_) {
+            score += STRAIGHT;
+        }
+        score -= crowding(end);
+        if (plan.portal) {
+            score -= PORTAL_RISK;
+        }
+        // With no safe move, buy the most turns: other dragons move on and
+        // the tail frees tiles, so a pocket that lasts can still open up.
+        if (!plan.safe) {
+            score = -UNSAFE + static_cast<long long>(plan.lasts) * PEARL +
+                    static_cast<long long>(plan.room) * PEARL / 10 + score / 1000;
+        }
+        plan.score = score;
     }
 
-    int nearest_enemy_dist() const {
-        return enemy_dist_to(here_.x, here_.y);
-    }
-
-    bool peer_nearby() const {
-        for (Head const& head : enemy_heads_) {
-            if (logic::peer_threat(length_, head.len) &&
-                logic::chebyshev(here_.x, here_.y, head.x, head.y, width_, height_) <= 4) {
-                return true;
+    // Dragons packed together wall each other in: keep our head away from
+    // allied heads, and out of the narrow water between other bodies.
+    long long crowding(int cell) const {
+        long long cost = 0;
+        for (Other const& other : others_) {
+            if (other.enemy) {
+                continue;
+            }
+            int gap = logic::manhattan(cx(cell), cy(cell), other.x, other.y, w_, h_);
+            if (gap <= 3) {
+                cost += CROWD * (4 - gap);
             }
         }
-        return false;
-    }
-
-    bool grower_walks_into_enemy(int dir) const {
-        if (length_ < 8 || enemy_heads_.empty()) {
-            return false;
-        }
-        logic::Point next = logic::step_wrap(here_.x, here_.y, dir, width_, height_);
-        int now = nearest_enemy_dist();
-        if (now > 4) {
-            return false;
-        }
-        int after = enemy_dist_to(next.x, next.y);
-        if (scorer_ && after > logic::avoid_radius(length_, true)) {
-            return false;
-        }
-        if (peer_nearby() && after <= now) {
-            return true;
-        }
-        return after < now;
-    }
-
-    static int open_edges(Cell const& cell) {
-        int count = 0;
-        for (int dir = 0; dir < 4; ++dir) {
-            if (cell.edge_seen[dir] && !cell.kelp[dir]) {
-                ++count;
+        for (int part : occ_list_) {
+            int who = occ_[static_cast<std::size_t>(part)];
+            if (who == id_) {
+                continue;
             }
+            if (logic::manhattan(cx(cell), cy(cell), cx(part), cy(part), w_, h_) <= 2) {
+                cost += CROWD / 4;
+            }
+        }
+        return cost;
+    }
+
+    int next_stamp() {
+        if (++stamp_ == (1 << 30)) {
+            std::fill(mark_.begin(), mark_.end(), 0);
+            stamp_ = 1;
+        }
+        return stamp_;
+    }
+
+    // Moves after the plan before a tile is free for our head: other dragons
+    // are walls, our own segments free up as the tail passes, and tiles
+    // beside another head may be taken before we move again.
+    int wait_for(int cell, std::vector<int> const& body_index, int length) const {
+        if (occ_[static_cast<std::size_t>(cell)] >= 0 && occ_[static_cast<std::size_t>(cell)] != id_) {
+            return NEVER;
+        }
+        int index = body_index[static_cast<std::size_t>(cell)];
+        if (index >= 0) {
+            return logic::unlock_time(length, index);
+        }
+        return 0;
+    }
+
+    std::vector<int> index_of(std::vector<int> const& body) const {
+        std::vector<int> index(static_cast<std::size_t>(n_), -1);
+        for (std::size_t i = 0; i < body.size(); ++i) {
+            index[static_cast<std::size_t>(body[i])] = static_cast<int>(i);
+        }
+        return index;
+    }
+
+    // Tiles the head can still reach after the plan, where a tile our own
+    // body covers opens once the tail has passed it. Stops counting at 'cap'.
+    // 'pearls' returns the known pearls among the counted tiles: grazing
+    // them lengthens the body, so the room has to hold those segments too.
+    int flood(std::vector<int> const& body, int length, int cap, int& pearls) {
+        pearls = 0;
+        std::vector<int> body_index = index_of(body);
+        int stamp = next_stamp();
+        std::vector<int> frontier{body.front()};
+        std::vector<std::pair<int, int>> waiting;  // (open time, tile)
+        mark_[static_cast<std::size_t>(body.front())] = stamp;
+        int count = 1;
+        // A dragon cannot stand still, so a tile that opens later is only
+        // reachable while the head still has somewhere to go meanwhile.
+        for (int t = 1; count < cap && !frontier.empty() && t <= length + 2; ++t) {
+            std::vector<int> next;
+            for (auto& entry : waiting) {
+                if (entry.first <= t && mark_[static_cast<std::size_t>(entry.second)] != stamp) {
+                    mark_[static_cast<std::size_t>(entry.second)] = stamp;
+                    next.push_back(entry.second);
+                    ++count;
+                }
+            }
+            for (int cell : frontier) {
+                for (int dir = 0; dir < 4; ++dir) {
+                    world::Landing land = map_.step(cx(cell), cy(cell), dir, true);
+                    if (!land.ok) {
+                        continue;
+                    }
+                    int to = map_.index(land.x, land.y);
+                    if (mark_[static_cast<std::size_t>(to)] == stamp) {
+                        continue;
+                    }
+                    int open = wait_for(to, body_index, length);
+                    if (t <= HEAD_REACH && head_can_reach(to, t)) {
+                        continue;
+                    }
+                    if (open >= NEVER) {
+                        continue;
+                    }
+                    if (open > t) {
+                        waiting.emplace_back(open, to);
+                        continue;
+                    }
+                    mark_[static_cast<std::size_t>(to)] = stamp;
+                    next.push_back(to);
+                    ++count;
+                    if (map_.cell(to).pearl) {
+                        ++pearls;
+                    }
+                }
+            }
+            frontier.swap(next);
         }
         return count;
     }
 
-    int goal_value(int x, int y, int dist) const {
-        if (dist == 0) {
-            return -1;
+    // Exact look-ahead: can the head keep moving for the next few turns with
+    // the body simulated step by step? A tight pocket has few branches, so
+    // the search settles it; in open water the budget runs out first and the
+    // flood count above decides.
+    bool survives(std::vector<int> const& body, int length) {
+        survive_index_ = index_of(body);
+        if (entered_.empty()) {
+            entered_.assign(static_cast<std::size_t>(n_), -1);
         }
-        Cell const& cell = cells_[static_cast<std::size_t>(index_of(x, y))];
-        int noise = (x * 3 + y * 5 + my_id_) & 7;
-        bool snowball = policy_.macro == logic::Macro::Snowball;
-        bool foreign = logic::claim_live(cell.claim_round, round_, false) && cell.claimed_by >= 0 && cell.claimed_by != my_id_;
-        bool mine = logic::claim_live(cell.claim_round, round_, false) && cell.claimed_by == my_id_;
-        if (!snowball && cell.pearl && foreign && !scorer_) {
-            return 250000 - dist * 10 + noise;
+        budget_ = SURVIVE_BUDGET;
+        deepest_ = 0;
+        int depth = std::min(length + 1, SURVIVE_DEPTH);
+        bool ok = search(body.front(), 0, depth, length, 0);
+        return ok || budget_ <= 0;
+    }
+
+    // 'grown' counts pearls eaten along this path: each one holds the tail
+    // back a move, so every tile opens that much later.
+    bool search(int cell, int t, int depth, int length, int grown) {
+        deepest_ = std::max(deepest_, t);
+        if (t >= depth || --budget_ <= 0) {
+            return true;
         }
-        if (cell.pearl) {
-            int score = 1000000 - dist * 10 + noise;
-            if (mine && scorer_) {
-                score += 200000;
+        int move = t + 1 - grown;
+        for (int dir = 0; dir < 4; ++dir) {
+            world::Landing land = map_.step(cx(cell), cy(cell), dir, true);
+            if (!land.ok) {
+                continue;
             }
-            if (scorer_) {
-                score += open_edges(cell) >= 2 ? 4000 : -30000;
+            int to = map_.index(land.x, land.y);
+            int who = occ_[static_cast<std::size_t>(to)];
+            if (who >= 0 && who != id_) {
+                continue;
             }
-            if (foreign) {
-                score = 300000 - dist * 10;
+            int index = survive_index_[static_cast<std::size_t>(to)];
+            if (index >= 0 && move < length - index + 1) {
+                continue;
             }
-            return score;
+            int before = entered_[static_cast<std::size_t>(to)];
+            if (before >= 0 && move < before + length + 1) {
+                continue;
+            }
+            if (move <= HEAD_REACH && head_can_reach(to, t + 1)) {
+                continue;
+            }
+            entered_[static_cast<std::size_t>(to)] = t + 1;
+            int eats = map_.cell(to).pearl && before < 0 ? 1 : 0;
+            bool ok = search(to, t + 1, depth, length, grown + eats);
+            entered_[static_cast<std::size_t>(to)] = before;
+            if (ok) {
+                return true;
+            }
         }
-        if (cell.seen && cell.spawn_round > round_ && cell.spawn_round <= round_ + policy_.pearl_horizon) {
-            int wait = cell.spawn_round - round_;
-            int score = 500000 - wait * 400 - dist * 10 + noise;
-            if (!scorer_ && !snowball) {
-                score += 80000;
+        return false;
+    }
+
+    // Every other dragon moves once before each of ours (lower ids next
+    // round, higher ids later this one), so another head, ally or enemy,
+    // may already stand on a tile within 'moves' steps of it by the time our
+    // head gets there. Only the next couple of moves are judged this way:
+    // further out the guess is too loose to rule tiles out.
+    bool head_can_reach(int cell, int moves) const {
+        for (Other const& other : others_) {
+            if (logic::manhattan(cx(cell), cy(cell), other.x, other.y, w_, h_) <= moves) {
+                return true;
             }
-            return score;
         }
-        if (!scorer_ && length_ <= 6) {
-            for (Head const& head : enemy_heads_) {
-                if (!logic::worth_trade(length_, head.len, allies_, snowball)) {
-                    continue;
+        return false;
+    }
+
+    // Distance-discounted pull of every pearl we expect to find, walking out
+    // from where the plan leaves our head.
+    long long value_from(std::vector<int> const& body, int length) {
+        std::vector<int> body_index = index_of(body);
+        int stamp = next_stamp();
+        int start = body.front();
+        std::vector<int> frontier{start};
+        mark_[static_cast<std::size_t>(start)] = stamp;
+        long long total = tile_value(start, 0);
+        for (int t = 1; t <= VALUE_DEPTH && !frontier.empty(); ++t) {
+            std::vector<int> next;
+            for (int cell : frontier) {
+                for (int dir = 0; dir < 4; ++dir) {
+                    world::Landing land = map_.step(cx(cell), cy(cell), dir, true);
+                    if (!land.ok) {
+                        continue;
+                    }
+                    int to = map_.index(land.x, land.y);
+                    if (mark_[static_cast<std::size_t>(to)] == stamp) {
+                        continue;
+                    }
+                    mark_[static_cast<std::size_t>(to)] = stamp;
+                    if (wait_for(to, body_index, length) > t) {
+                        total += ram_bait(to, t);
+                        continue;
+                    }
+                    total += tile_value(to, t);
+                    next.push_back(to);
                 }
-                if (logic::chebyshev(x, y, head.x, head.y, width_, height_) == 1) {
-                    return 700000 - dist * 10;
-                }
             }
-            if (hint_x_ == x && hint_y_ == y && hint_len_ >= 8 && round_ - hint_round_ <= 15 &&
-                logic::worth_trade(length_, hint_len_, allies_, snowball)) {
-                return 450000 - dist * 10;
-            }
+            frontier.swap(next);
         }
-        if (scorer_ && known_pearl_) {
-            return -1;
-        }
-        int score = -1;
-        if (!cell.seen) {
-            score = 40000 - dist * 8 + noise;
-        } else if (round_ - cell.seen_round > 20) {
-            score = 15000 - dist * 8 + noise;
+        return total;
+    }
+
+    long long tile_value(int cell, int t) const {
+        world::Cell const& c = map_.cell(cell);
+        int arrive = round_ + t + 1;
+        int chance = 0;
+        if (c.seen) {
+            chance = logic::pearl_chance(true, c.pearl, round_ - c.seen_round, c.spawn_round, arrive, tuning::FOG_PRIOR);
+        } else if (c.timed) {
+            // Never seen, but its mirror told us when it spawns.
+            chance = logic::pearl_chance(true, false, round_ - c.timed_round, c.spawn_round, arrive, tuning::FOG_PRIOR);
+            chance = std::max(chance, tuning::FOG_PRIOR);
         } else {
-            return -1;
+            chance = tuning::FOG_PRIOR;
         }
-        if (!scorer_ && policy_.sector_prefer > 0 && !sector_owner_.empty()) {
-            int index = logic::sector_index(x, y, width_, height_, cols_, rows_);
-            int owner = sector_owner_[static_cast<std::size_t>(index)];
-            if (owner < 0) {
-                score += 25000;
-            } else if (owner == my_id_) {
-                score += 8000;
-            } else {
-                score -= 12000;
+        if (feed_target_ >= 0) {
+            // A feeder heads for the king and leaves the pearls near it alone.
+            int to_king = logic::manhattan(cx(cell), cy(cell), cx(feed_target_), cy(feed_target_), w_, h_);
+            if (to_king <= FEED_RANGE) {
+                return gamma_[static_cast<std::size_t>(t)] * 3;
             }
-            if (round_ - sector_visit_[static_cast<std::size_t>(index)] < 25) {
-                score -= policy_.sector_prefer == 2 ? 15000 : 5000;
-            }
-            for (Head const& ally : ally_heads_) {
-                if (logic::sector_index(ally.x, ally.y, width_, height_, cols_, rows_) == index) {
-                    score -= 18000;
-                }
+            if (to_king <= FEED_RANGE + 3) {
+                return 0;
             }
         }
-        if (policy_.outer_first && !outer_ready_) {
-            if (logic::sector_is_outer(x, y, width_, height_, cols_, rows_)) {
-                score += 22000;
-            } else {
-                score -= 22000;
+        if (chance == 0) {
+            return 0;
+        }
+        for (Other const& other : others_) {
+            int theirs = logic::manhattan(cx(cell), cy(cell), other.x, other.y, w_, h_);
+            if (theirs < t + (other.enemy ? 0 : 1) || (theirs == t + 1 && other.id < id_)) {
+                chance = chance * (other.enemy ? 50 : 30) / 100;
             }
         }
-        return score;
+        return gamma_[static_cast<std::size_t>(t)] * chance / 100;
     }
 
-    int bfs_dir_toward_goal(unswbc::Controller& ct) {
-        int cells = width_ * height_;
-        std::vector<int> dist(static_cast<std::size_t>(cells), -1);
-        std::vector<int> first(static_cast<std::size_t>(cells), -1);
-        std::vector<char> blocked(static_cast<std::size_t>(cells), 0);
-        for (unswbc::Tile const& tile : ct.get_tiles()) {
-            unswbc::DragonPart const* part = tile.get_dragon();
-            if (part == nullptr) {
+    // A short dragon is drawn toward a clearly longer enemy head: reaching it
+    // is a ram that trades up.
+    long long ram_bait(int cell, int t) const {
+        if (len_ > KAMIKAZE_LEN || units_ <= 1 || !is_enemy_head(cell)) {
+            return 0;
+        }
+        int theirs = enemy_len_at(cell);
+        if (!logic::worth_ram(len_, theirs, units_, false)) {
+            return 0;
+        }
+        return gamma_[static_cast<std::size_t>(t)] * (100 + 10 * theirs) / 100;
+    }
+
+    // ---- choosing ----------------------------------------------------------
+
+    static Plan const* best_of(std::vector<Plan> const& plans, bool safe_only) {
+        Plan const* best = nullptr;
+        for (Plan const& plan : plans) {
+            if (plan.ram_len > 0 || (safe_only && !plan.safe)) {
                 continue;
             }
-            unswbc::Position position = tile.get_position();
-            if (inside(position.x, position.y)) {
-                blocked[static_cast<std::size_t>(index_of(position.x, position.y))] = 1;
+            if (best == nullptr || plan.score > best->score) {
+                best = &plan;
             }
         }
-        int origin = index_of(here_.x, here_.y);
-        blocked[static_cast<std::size_t>(origin)] = 0;
-        dist[static_cast<std::size_t>(origin)] = 0;
-
-        std::vector<int> queue;
-        queue.push_back(origin);
-        int best_value = -1;
-        int best_index = -1;
-        int order[4] = {facing_, logic::right_of(facing_), logic::left_of(facing_), logic::opposite_dir(facing_)};
-
-        for (std::size_t q = 0; q < queue.size(); ++q) {
-            int current = queue[q];
-            int x = current % width_;
-            int y = current / width_;
-            int current_dist = dist[static_cast<std::size_t>(current)];
-            for (int k = 0; k < 4; ++k) {
-                int dir = current_dist == 0 ? order[k] : ((k + my_id_) & 3);
-                if (current_dist == 0 && dir == logic::opposite_dir(facing_)) {
-                    continue;
-                }
-                // First step is a real move (strict). Later steps may cross fog.
-                if (at(x, y).portal[dir] >= 0 && !policy_.portal_bfs) {
-                    continue;
-                }
-                logic::Point next = destination(x, y, dir, current_dist == 0);
-                if (!next.ok) {
-                    continue;
-                }
-                if (at(x, y).portal[dir] >= 0) {
-                    if (portal_exit_risky(next)) {
-                        continue;
-                    }
-                    if (current_dist == 0 && ct.get_tile(unswbc::Position(next.x, next.y)) == nullptr) {
-                        continue;
-                    }
-                }
-                int next_index = index_of(next.x, next.y);
-                if (blocked[static_cast<std::size_t>(next_index)] || dist[static_cast<std::size_t>(next_index)] >= 0) {
-                    continue;
-                }
-                dist[static_cast<std::size_t>(next_index)] = current_dist + 1;
-                first[static_cast<std::size_t>(next_index)] = current_dist == 0 ? dir : first[static_cast<std::size_t>(current)];
-                int value = goal_value(next.x, next.y, current_dist + 1);
-                if (value > best_value) {
-                    best_value = value;
-                    best_index = next_index;
-                }
-                queue.push_back(next_index);
-            }
-        }
-        if (best_index < 0) {
-            return -1;
-        }
-        ct.draw_indicator_dot(unswbc::Position(best_index % width_, best_index / width_), 80, 220, 255);
-        return first[static_cast<std::size_t>(best_index)];
+        return best;
     }
 
-    static bool step_is_safe(std::vector<Step> const& safe, int dir) {
-        for (Step const& step : safe) {
-            if (step.dir == dir) {
+    Plan const* best_ram(std::vector<Plan> const& plans, bool cornered) const {
+        Plan const* best = nullptr;
+        for (Plan const& plan : plans) {
+            if (plan.ram_len <= 0 || !logic::worth_ram(len_, plan.ram_len, units_, cornered)) {
+                continue;
+            }
+            if (best == nullptr || plan.ram_len > best->ram_len) {
+                best = &plan;
+            }
+        }
+        return best;
+    }
+
+    // Splitting spends the turn standing still, so only do it with a safe
+    // move in hand, no enemy head close, and room for the child to move.
+    bool try_split(unswbc::Controller& ct, Plan const& safe_move) {
+        int cap = logic::team_cap(w_, h_, limit_, tuning::TILES_PER_DRAGON);
+        if (!logic::want_split(len_, units_, cap, round_, tuning::SPLIT_LEN, tuning::SPLIT_LAST_ROUND)) {
+            return false;
+        }
+        if (!ct.can_split(tuning::CHILD_SIZE) || threat_[static_cast<std::size_t>(head_)] > 0) {
+            return false;
+        }
+        // Ladder replays: the teams that beat us split whenever they can and
+        // shrug off the children they lose, so only the checks that keep a
+        // split from being plainly suicidal stay unconditional.
+        if (tuning::SPLIT_CAREFUL && (safe_move.eaten > 0 || enemy_within(3))) {
+            return false;
+        }
+        bool tail_known = static_cast<int>(body_.size()) >= len_;
+        if (tail_known && open_room(body_.back(), tuning::CHILD_ROOM) < tuning::CHILD_ROOM) {
+            return false;
+        }
+        if (!tail_known && tuning::SPLIT_CAREFUL) {
+            return false;
+        }
+        ct.do_split(tuning::CHILD_SIZE);
+        ct.set_indicator_string("split");
+        trail_.erase(trail_.begin(), trail_.end() - std::min<int>(static_cast<int>(trail_.size()), len_ - tuning::CHILD_SIZE));
+        return true;
+    }
+
+    // Free tiles reachable from 'start' through tiles no dragon stands on
+    // now, counting up to 'cap'. A newborn child must not start in a pocket.
+    int open_room(int start, int cap) {
+        int stamp = next_stamp();
+        mark_[static_cast<std::size_t>(start)] = stamp;
+        std::vector<int> queue{start};
+        for (std::size_t q = 0; q < queue.size() && static_cast<int>(queue.size()) <= cap; ++q) {
+            int cell = queue[q];
+            for (int dir = 0; dir < 4; ++dir) {
+                world::Landing land = map_.step(cx(cell), cy(cell), dir, true);
+                if (!land.ok || land.portal) {
+                    continue;
+                }
+                int to = map_.index(land.x, land.y);
+                if (mark_[static_cast<std::size_t>(to)] == stamp || occ_[static_cast<std::size_t>(to)] >= 0) {
+                    continue;
+                }
+                mark_[static_cast<std::size_t>(to)] = stamp;
+                queue.push_back(to);
+            }
+        }
+        return static_cast<int>(queue.size()) - 1;
+    }
+
+    bool enemy_within(int range) const {
+        for (Other const& other : others_) {
+            if (other.enemy && logic::chebyshev(cx(head_), cy(head_), other.x, other.y, w_, h_) <= range) {
                 return true;
             }
         }
         return false;
     }
 
-    bool recently(int x, int y) const {
-        int key = y * width_ + x;
-        int count = history_n_ < 6 ? history_n_ : 6;
-        for (int i = 0; i < count; ++i) {
-            int slot = (history_n_ - 1 - i) & 7;
-            if (history_[slot] == key) {
-                return true;
-            }
+    void commit(unswbc::Controller& ct, Plan const& plan, char const* label) {
+        std::vector<unswbc::Direction> dirs;
+        for (int dir : plan.dirs) {
+            dirs.push_back(to_direction(dir));
         }
-        return false;
-    }
-
-    void remember(int x, int y) {
-        history_[history_n_ & 7] = y * width_ + x;
-        ++history_n_;
-        if (inside(x, y)) {
-            own_sector(x, y);
+        if (dirs.size() == 1) {
+            ct.make_move(dirs.front());
+        } else {
+            ct.make_moves(dirs);
         }
-    }
-
-    int openness(int x, int y) {
-        int score = 0;
-        for (int dir = 0; dir < 4; ++dir) {
-            logic::Point next = destination(x, y, dir);
-            if (next.ok) {
-                ++score;
-            }
-        }
-        return score;
-    }
-
-    int pick_roam(std::vector<Step> const& safe, bool flee) {
-        int best_dir = -1;
-        int best_score = -1000000000;
-        for (Step const& step : safe) {
-            int score = openness(step.dest.x, step.dest.y) * 20;
-            if (step.dir == facing_) {
-                score += 30;
-            }
-            if (step.dir == (my_id_ & 3)) {
-                score += 10;
-            }
-            if (recently(step.dest.x, step.dest.y)) {
-                score -= 200;
-            }
-            if (!at(step.dest.x, step.dest.y).seen) {
-                score += 80;
-            }
-            if (policy_.outer_first && !outer_ready_) {
-                if (logic::sector_is_outer(step.dest.x, step.dest.y, width_, height_, cols_, rows_)) {
-                    score += 50;
-                } else {
-                    score -= 50;
-                }
-            }
-            if (!scorer_ && policy_.sector_prefer > 0 && !sector_visit_.empty()) {
-                int index = logic::sector_index(step.dest.x, step.dest.y, width_, height_, cols_, rows_);
-                if (round_ - sector_visit_[static_cast<std::size_t>(index)] < 25) {
-                    score -= 80;
-                }
-            }
-            if (flee) {
-                for (Head const& head : enemy_heads_) {
-                    score += logic::chebyshev(step.dest.x, step.dest.y, head.x, head.y, width_, height_) * 40;
-                }
-            }
-            int wait = at(step.dest.x, step.dest.y).spawn_round - round_;
-            if (wait >= 0 && wait <= 8) {
-                score += 250 - wait * 20;
-            }
-            if (score > best_score) {
-                best_score = score;
-                best_dir = step.dir;
-            }
-        }
-        return best_dir;
-    }
-
-    int dir_between(logic::Point from, logic::Point to) const {
-        for (int dir = 0; dir < 4; ++dir) {
-            logic::Point step = logic::step_wrap(from.x, from.y, dir, width_, height_);
-            if (step.x == to.x && step.y == to.y) {
-                return dir;
-            }
-        }
-        return -1;
-    }
-
-    bool split_is_safe(unswbc::Controller& ct, std::vector<Step> const& head_exits) {
-        if (static_cast<int>(head_exits.size()) < 3) {
-            return false;
-        }
-        // Without a traced tail we cannot count the child's neighbours, so skip.
-        if (!tail_known_ || !tail_neck_ok_) {
-            return false;
-        }
-        int parent = dir_between(tail_, tail_neck_);
-        int open = 0;
-        for (int dir = 0; dir < 4; ++dir) {
-            if (dir == parent) {
-                continue;
-            }
-            logic::Point next = destination(tail_.x, tail_.y, dir, true);
-            if (!next.ok) {
-                continue;
-            }
-            unswbc::Tile const* tile = ct.get_tile(unswbc::Position(next.x, next.y));
-            if (tile == nullptr || tile->get_dragon() != nullptr) {
-                continue;
-            }
-            ++open;
-        }
-        return logic::child_has_room(open);
-    }
-
-    int ram_dir(unswbc::Controller& ct, bool trapped) {
-        int best_dir = -1;
-        int best_len = -1;
-        for (int dir = 0; dir < 4; ++dir) {
-            if (dir == logic::opposite_dir(facing_)) {
-                continue;
-            }
-            logic::Point next = destination(here_.x, here_.y, dir);
-            if (!next.ok) {
-                continue;
-            }
-            unswbc::Tile const* tile = ct.get_tile(unswbc::Position(next.x, next.y));
-            if (tile == nullptr || tile->get_dragon() == nullptr || !tile->get_dragon()->is_head()) {
-                continue;
-            }
-            unswbc::DragonPart const* part = tile->get_dragon();
-            if (part->get_team() == ct.get_team()) {
-                continue;
-            }
-            int enemy_len = count_segments(ct, part->get_id());
-            bool snowball = policy_.macro == logic::Macro::Snowball;
-            bool take = trapped ? logic::trapped_ram(length_, enemy_len, allies_)
-                                : logic::worth_trade(length_, enemy_len, allies_, snowball);
-            if (take && enemy_len > best_len) {
-                best_len = enemy_len;
-                best_dir = dir;
-            }
-        }
-        return best_dir;
-    }
-
-    // Die alone rather than erase a teammate. A wall, our own body, or an ally body
-    // kills only us. An ally head kills both.
-    int desperate_dir(unswbc::Controller& ct) {
-        int wall = -1;
-        int self_body = -1;
-        int ally_body = -1;
-        int ally_head = -1;
-        for (int dir = 0; dir < 4; ++dir) {
-            if (dir == logic::opposite_dir(facing_)) {
-                continue;
-            }
-            logic::Point next = destination(here_.x, here_.y, dir);
-            if (!next.ok) {
-                wall = dir;
-                continue;
-            }
-            unswbc::Tile const* tile = ct.get_tile(unswbc::Position(next.x, next.y));
-            unswbc::DragonPart const* part = tile == nullptr ? nullptr : tile->get_dragon();
-            if (part == nullptr) {
-                return dir;
-            }
-            if (part->get_id() == my_id_) {
-                self_body = dir;
-            } else if (part->get_team() == ct.get_team() && part->is_head()) {
-                ally_head = dir;
-            } else if (part->get_team() == ct.get_team()) {
-                ally_body = dir;
-            } else if (part->is_head()) {
-                return dir;
-            } else {
-                self_body = dir;
-            }
-        }
-        if (wall >= 0) {
-            return wall;
-        }
-        if (self_body >= 0) {
-            return self_body;
-        }
-        if (ally_body >= 0) {
-            return ally_body;
-        }
-        if (ally_head >= 0) {
-            return ally_head;
-        }
-        return facing_;
-    }
-
-    void commit(unswbc::Controller& ct, int dir, char const* label) {
-        ct.make_move(from_index(dir));
         ct.set_indicator_string(label);
-        logic::Point next = destination(here_.x, here_.y, dir);
-        if (next.ok) {
-            remember(next.x, next.y);
+        for (int cell : plan.cells) {
+            trail_.push_back(cell);
+        }
+        pending_portal_ = plan.portal && plan.dirs.size() == 1;
+        if (plan.explore) {
+            ct.set_indicator_string("explore");
+        }
+        if (pending_portal_) {
+            portal_from_ = head_;
+            portal_dir_ = plan.dirs.front();
         }
     }
 };

@@ -2,113 +2,116 @@
 
 A C++ bot for [UNSW Battlecode](https://game.battlecode.au), the 2026 dragon
 game. Each dragon runs its own copy of one program with no shared memory and
-only ~25 ms (or 100 million CPU points) per turn, so the bot is built around
-cheap local reasoning plus a checksummed sonar protocol for teammate
-communication.
+roughly 25 ms (100 million CPU points) per turn.
 
-The win goes to the team that wipes the other side, or — after 500 rounds —
-to the **longest single dragon**, then the most total length. Leviathan v3
-plays that in two phases. Early, it splits into length-3–4 farmers so the
-map is covered. On maps that run long, one dragon becomes the scorer and
-stops splitting so the team banks a single long body.
+A game is won by wiping out the other team, or, after 500 rounds, by the
+**longest single dragon**, then by total length. Leviathan plays a swarm game
+for most of the match and then turns that swarm into one long dragon for the
+tiebreak.
 
 ## Repository layout
 
 ```
-leviathan/        the bot — main.cpp, logic.hpp, helper.hpp, bot.toml
-starter/           the stock `unswbc init` bot, kept as a reference opponent
-maps/              bundled match maps shipped by the toolkit
-tests/test_logic.cpp   unit tests for the pure rules in logic.hpp
-Battlecode_Postmortem_2026.pdf   design notes / postmortem
+leviathan/          the bot
+  main.cpp            per-turn decisions (Brain)
+  world.hpp           map memory: kelp, portals, pearl timing, symmetry inference
+  king.hpp            which ally is the team's king, relayed by sonar
+  logic.hpp           pure, unit-tested rules (geometry, sonar, combat, splitting, feeding)
+  tuning.hpp          strategy knobs
+  helper.hpp          the toolkit's engine reader (unchanged)
+starter/            the stock `unswbc init` bot, a reference opponent
+maps/               bundled match maps
+tests/test_logic.cpp  unit tests for logic.hpp
+tools/arena.py      batch runner: every map, both sides, in parallel, in the judge sandbox
+tools/genmap.py     random symmetric maps for wider testing
+tools/stuck_dump.py draws a dragon's last few 7x7 views before it died
 ```
-
-`helper.hpp` is the toolkit's engine reader; `logic.hpp` holds the pure,
-testable rules (torus geometry, portal traversal, sonar packing, combat and
-split policy); `main.cpp` is the per-turn decision loop.
 
 ## Strategy
 
-Map class comes from area, tuned to the bundled ladder maps:
+- **Swarm early.** Every top-50 team in 587 ladder replays splits a
+  two-segment child the moment a dragon reaches length 4, from round 0, and
+  keeps 40–64 dragons until about round 400. Leviathan does the same, up to
+  one dragon per 12 map tiles, until round 380, and splits whenever the
+  child has a few free tiles. Losing children is cheap. Being outnumbered is
+  not: on the small maps the team with more heads wipes out the other.
+- **Never die by accident.** Every move is checked by a flood fill in which
+  our own body frees up as the tail passes, and by an exact bounded look-ahead
+  that simulates the body step by step, counting pearls eaten on the way,
+  since each pearl holds the tail back one move. Tiles that another head
+  could reach before our next move count as possibly taken. Crossing a portal
+  whose far side is out of view is a last resort only. When every move is bad,
+  the dragon picks the one that keeps it alive longest.
+- **Go through portals.** Four of the nine ranked maps wall each spawn in
+  behind portals, with the fountain tiles (pearls every round) beyond them.
+  A portal whose far end has never been seen is still crossed when the
+  current area is running dry. The engine always lands the head on a real
+  tile, and the pair's far end is learned on arrival.
+- **Know the map.** Maps are mirrored in x, in y, or rotated 180°. Each dragon
+  rules out symmetries whose mirror images disagree with what it has seen.
+  Once one symmetry is left, it fills in unseen kelp and pearl timings from
+  their mirror tiles.
+- **Farm by expected value.** A BFS from each candidate move sums the
+  distance-discounted chance of a pearl on every reachable tile. That uses
+  remembered pearls, countdowns that will have run out by the time we arrive,
+  and mirrored timings, and it discounts tiles an ally or enemy will reach
+  first. Heads keep clear of each other and of narrow water between bodies.
+- **Trade up.** A short dragon rams a clearly longer enemy head (both die),
+  and a cornered dragon takes an enemy head with it. Longer dragons price the
+  risk of ending a move where an enemy head could reach them.
+- **Feed the king.** Every dragon relays, by sonar each turn, the longest ally
+  it knows of. From round 420 the rest of the team, except the last few
+  dragons, walk to that king and die beside it. A dead dragon turns every
+  second segment into a pearl, so the swarm's total length becomes one long
+  dragon for the tiebreak.
 
-| Class | Maps | Early split | Cap | Late game |
-|-------|------|-------------|-----|-----------|
-| Snowball | Arena, Colosseum, Default Small, Devil | length 3 | 12 | no scorer; stop splitting once 8 dragons exist after round 100 |
-| Mid | Default, Trophy, Queen Of Spades | length 4 (3 before round 60 if fewer than 6 dragons) | 16 | light scorer from length 10; outer sectors before the center |
-| Farm | Trauma, Stronghold, Schooltime, Big Empty | length 4, then 6 after round 200 | 28 | one scorer from length 12; that dragon never splits |
+## Testing
 
-- **Eat first.** Step onto a visible pearl, and remember tile countdowns so
-  the bot returns just before a pearl spawns. A body of length 8 or more
-  needs two exits after the bite. A one-exit corridor next to an enemy head
-  is refused.
-- **Stay alive.** Never reverse into its own neck, never cross kelp, and
-  never enter a one-tile pocket. A sprint is legal only when both edges have
-  already been seen. Unseen edges are walls for real steps.
-- **Roles.** The scorer is the longest dragon (lowest id on a tie) once it
-  reaches the map's length gate and round 80. It does not split, does not
-  pick offensive rams, and keeps a wider gap from enemy heads. Farmers keep
-  splitting up to the cap, yield pearls to a longer ally, and spread across
-  sectors.
-- **Sprint with purpose.** A sprint costs one segment per extra step. Snowball
-  maps sprint only to escape or to steal a contested pearl. Mid maps may also
-  take two pearls. Farm maps may cross a gap to a known pearl once length is
-  at least 5. Fog sprints are never taken.
-- **Portals.** Recorded portal pairs are one-cost edges in the search. An
-  exit sitting on an enemy head is refused unless the dragon is escaping a
-  trap. Big Empty has no portals, so that search stays off.
-- **Trade up, never down.** A short dragon will ram a clearly longer enemy
-  head. On snowball maps the trade is a little looser. Longer dragons step
-  away from a near-equal head. The last dragon never invites a head-to-head.
-- **Talk by sonar.** Teammates broadcast pearls, claims, sector owners,
-  the scorer, and enemy heads. Messages are a 64-bit body with the same
-  multiplicative checksum, so random enemy sonar is ignored. Kinds 1 and 2
-  stay compatible with v2. Claims expire after 40 rounds.
-
-## Quickstart
-
-Install the toolkit (Python 3.11+ or `uv`):
-
-```
-uv tool install unswbc          # or: pip install unswbc
-```
-
-Run a match against the stock starter:
-
-```
-unswbc run maps\arena.map leviathan starter
-```
-
-Open the generated `.replay` in VS Code / Cursor, or run `unswbc vscode` to
-install the viewer. The same command works with any map in `maps/`.
-
-## Tests
-
-The pure rules in `logic.hpp` are unit-tested independently of the engine:
+Unit tests for the pure rules:
 
 ```
 g++ -std=c++14 -Wall -Wextra -o tests/test_logic.exe tests/test_logic.cpp
 ./tests/test_logic.exe
 ```
 
-## Submitting
+Batch matches in the judge's own sandbox. Use the unswbc tool's Python, so
+its engine imports:
 
-Create an API key on your team page (it starts with `bc_`), then:
+```
+& "$env:APPDATA\uv\tools\unswbc\Scripts\python.exe" tools/arena.py leviathan starter --why
+& "$env:APPDATA\uv\tools\unswbc\Scripts\python.exe" tools/arena.py leviathan other_bot --maps maps gen_maps
+python tools/genmap.py gen_maps --count 24 --seed 7
+```
+
+Local results. Each row is both sides of every map; "35 maps" means the 11
+bundled plus 24 generated ones, and "33 maps" means the 9 ranked plus 24
+generated.
+
+| matchup | result |
+|---|---|
+| v5 (portal exploration, eager splits) vs v4 (33 maps) | 47 W / 19 L |
+| v4 vs `main`'s v3 (35 maps) | 70 W / 0 L |
+| v4 vs stock starter (35 maps) | 70 W / 0 L |
+| king feeding vs none (35 maps) | 45 W / 25 L |
+
+Settings that tested neutral or worse and were left out: one dragon per 8
+tiles (34–32), feeding from round 400 (29–37), keeping 8 dragons out of
+feeding (40–30 against no feeding, versus 45–25 when keeping 3).
+
+These are all local games; the ladder is the real test.
+
+Turns use about 7–16M of the 100M CPU-point budget, with a worst case near 60M.
+
+## Known limitations
+
+- Feeding needs the sonar relay to reach allies. On kelp-heavy maps rays stop
+  at kelp, so some dragons never hear of the king and farm instead.
+- The safety checks see other dragons only as they stand now. A crowd of
+  allies can still close around a small dragon in narrow water.
+
+## Submitting
 
 ```
 unswbc auth set bc_...
-unswbc submit leviathan -n "leviathan v3" -d "v3 map-policy swarm+scorer, portals, claims"
+unswbc submit leviathan -n "leviathan v3" -d "Swarm, safe look-ahead, symmetry, king feeding"
 ```
-
-## Status
-
-Against the stock starter in the judge sandbox, Leviathan wins both colours on
-Arena, Colosseum, Default, Trophy, Queen Of Spades, Trauma, Schooltime, and
-Big Empty. It also wins Default Small, Devil, and Stronghold as red. The three
-blue losses are Default Small, Devil, and Stronghold. v2 lost Devil and
-Stronghold as blue as well, and lost Default Small as red, which v3 now wins.
-Turns use about 4–9 million of the 100 million CPU-point budget. Default and
-Trauma run to round 500 and win on the longest dragon.
-
-On snowball maps a one-exit tile is usually the lane, not a pocket, so a long
-body may eat there when the next tile still has a way forward. Those maps also
-keep the plain pearl sonar from v2, because a single claim sends the other
-dragon off the lane and into kelp.

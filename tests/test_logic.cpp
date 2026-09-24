@@ -66,152 +66,82 @@ void test_portal() {
 }
 
 void test_sonar() {
-    std::uint64_t word = logic::pack_sonar(logic::KIND_PEARL, 14, 9, 3, 42, 260);
+    std::uint64_t word = logic::pack_sonar(logic::KIND_KING, 14, 9, 3, 42, 260);
     logic::SonarMsg message = logic::unpack_sonar(word);
     expect(message.ok, "sonar checksum accepts");
-    expect(message.kind == logic::KIND_PEARL && message.x == 14 && message.y == 9, "sonar position");
+    expect(message.kind == logic::KIND_KING && message.x == 14 && message.y == 9, "sonar position");
     expect(message.aux == 3 && message.id == 42 && message.round_mod == (260 & 255), "sonar payload");
     expect(!logic::unpack_sonar(word ^ 1ull).ok, "tampered sonar rejected");
     expect(logic::sonar_age(260, 250) == 10, "sonar age across mod 256");
     expect(logic::sonar_age(40, 40) == 0, "sonar age same round");
 }
 
-void test_combat_and_split() {
-    expect(logic::worth_trade(5, 9, 2, false), "short dragon trades up");
-    expect(!logic::worth_trade(10, 14, 2, false), "queen does not ram");
-    expect(logic::worth_trade(3, 8, 2, false), "short dragon rams a long one");
-    expect(!logic::worth_trade(3, 8, 1, false), "last dragon does not ram");
-    expect(logic::worth_trade(4, 6, 3, true), "snowball farmer rams a longer peer");
-    expect(!logic::worth_trade(6, 9, 3, true), "snowball queen does not ram");
-    expect(logic::trapped_ram(10, 3, 1), "last dragon rams when trapped");
-    expect(!logic::trapped_ram(10, 3, 2), "queen does not ram a tiny dragon");
-    expect(logic::trapped_ram(10, 9, 3), "trapped dragon rams a peer");
-
-    expect(logic::plan_score(1, 2, 5, 3, false, false) < -100000, "uncontested sprint rejected");
-    expect(logic::plan_score(0, 2, 5, 1, false, false) < -100000, "fog sprint rejected");
-    expect(logic::plan_score(1, 2, 5, 3, true, false) == 1700, "contested sprint score");
-    expect(logic::plan_score(2, 2, 4, 2, false, false) == 6700, "double pearl sprint");
-    expect(logic::plan_score(1, 1, 3, 2, false, false) == 5100, "single step eat");
-    expect(logic::plan_score(0, 2, 5, 1, false, true) == -3100, "escape sprint");
-
-    int snow = static_cast<int>(logic::Macro::Snowball);
-    int mid = static_cast<int>(logic::Macro::MidContest);
-    int farm = static_cast<int>(logic::Macro::FarmLength);
-    expect(!logic::sprint_allowed(snow, 2, false, false, 6), "snowball skips a quiet double pearl");
-    expect(logic::sprint_allowed(snow, 1, true, false, 4), "snowball takes a contested pearl");
-    expect(logic::sprint_allowed(mid, 2, false, false, 4), "mid map takes two pearls");
-    expect(!logic::sprint_allowed(mid, 1, false, false, 8), "mid map skips an uncontested sprint");
-    expect(!logic::sprint_allowed(farm, 1, true, false, 4), "short farm dragon skips a single pearl sprint");
-    expect(logic::sprint_allowed(farm, 1, false, false, 5), "farm dragon sprints a long gap");
-    expect(logic::sprint_allowed(farm, 0, false, true, 3), "escape sprint stays legal");
-
-    expect(logic::unit_cap(11, 11) == 12, "snowball cap");
-    expect(logic::unit_cap(32, 32) == 16, "mid cap");
-    expect(logic::unit_cap(64, 64) == 28, "farm cap");
-    expect(logic::split_min_length(16, 16, 100) == 3, "snowball split length");
-    expect(logic::split_min_length(32, 32, 100) == 4, "mid split length");
-    expect(logic::split_min_length(64, 64, 100) == 4, "farm early split length");
-    expect(logic::split_min_length(64, 64, 220) == 6, "farm late split length");
-    expect(logic::want_split(4, 2, 100, false, false, false, true, 32, 32), "mid map splits at 4");
-    expect(!logic::want_split(3, 2, 100, false, false, false, true, 32, 32), "mid map waits until 4");
-    expect(logic::want_split(3, 2, 40, false, false, false, true, 32, 32), "early game splits at 3");
-    expect(!logic::want_split(3, 6, 40, false, false, false, true, 32, 32), "early split stops once six dragons exist");
-    expect(logic::want_split(3, 2, 20, false, false, false, true, 16, 16), "snowball splits at 3");
-    expect(!logic::want_split(2, 2, 20, false, false, false, true, 16, 16), "length 2 never splits");
-    expect(!logic::want_split(8, 8, 120, false, false, false, true, 32, 16), "snowball stops oversplitting");
-    expect(!logic::want_split(10, 28, 100, false, false, false, true, 64, 64), "farm cap stops splits");
-    expect(logic::want_split(8, 20, 100, false, false, false, true, 64, 64), "farm map still splits under the cap");
-    expect(!logic::want_split(20, 4, 100, false, false, true, true, 64, 64), "scorer never splits");
-    expect(!logic::want_split(8, 4, 100, true, false, false, true, 32, 32), "eat instead of split");
-    expect(!logic::want_split(8, 4, 100, false, true, false, true, 32, 32), "no split beside an enemy");
-    expect(!logic::want_split(8, 4, 100, false, false, false, false, 32, 32), "no split without room for the child");
-
-    expect(!logic::edge_blocked(false, false), "unseen open edge is walkable");
-    expect(!logic::edge_blocked(false, true), "unseen kelp is assumed open");
-    expect(logic::edge_blocked(true, true), "seen kelp is a wall");
-    expect(!logic::edge_blocked(true, false), "seen empty is open");
-    expect(logic::refuse_eat(0), "never eat into a dead end");
-    expect(!logic::refuse_eat(1), "eat when an exit remains");
-    expect(logic::long_body_refuse_eat(1, 10), "long body refuses a one-exit bite");
-    expect(!logic::long_body_refuse_eat(2, 10), "long body eats with two exits");
-    expect(!logic::long_body_refuse_eat(1, 4), "short body may eat with one exit");
-    expect(logic::corridor_refuse(1, 3, false), "corridor with a nearby head is refused");
-    expect(!logic::corridor_refuse(1, 4, false), "far head does not close the corridor");
-    expect(logic::corridor_refuse(1, 2, true), "eating a one-exit pearl is still refused");
-    expect(!logic::corridor_refuse(2, 1, true), "two exits stay open");
-    expect(!logic::sprint_edges_open(false, false, true, false), "unseen sprint edge is illegal");
-    expect(!logic::sprint_edges_open(true, true, true, false), "kelp sprint edge is illegal");
-    expect(logic::sprint_edges_open(true, false, true, false), "seen open sprint edges are legal");
-    expect(logic::avoid_enemy_head(10, 4, 2), "queen stays off a short enemy");
-    expect(!logic::avoid_enemy_head(3, 8, 2), "short dragon may close in");
-    expect(logic::avoid_enemy_head(10, 4, 1), "last dragon never invites a ram");
-    expect(logic::peer_threat(10, 11), "near-equal long bodies are a peer threat");
-    expect(!logic::peer_threat(10, 14), "a much longer enemy is not a peer");
-    expect(logic::avoid_radius(14, true) == 2, "scorer keeps a wider berth");
-    expect(logic::avoid_radius(14, false) == 1, "farmer avoid radius stays adjacent");
-    expect(logic::child_has_room(2), "child lives with two exits");
-    expect(!logic::child_has_room(1), "child dies in a one-tile pocket");
+void test_body_timing() {
+    // A body of 5 that does not eat: the tail (index 4) is still a wall on
+    // the next move and gone on the one after; the neck frees last.
+    expect(logic::unlock_time(5, 4) == 2, "tail frees on the second move");
+    expect(logic::unlock_time(5, 1) == 5, "neck frees last");
+    expect(logic::unlock_time(5, 0) >= logic::NEVER, "head tile never frees");
+    expect(logic::room_needed(3) == logic::MIN_ROOM, "tiny dragon still wants open water");
+    expect(logic::room_needed(30) == 31, "long dragon needs its length plus one");
 }
 
-void test_policy_and_roles() {
-    expect(logic::classify_macro(16, 16) == logic::Macro::Snowball, "default small is snowball");
-    expect(logic::classify_macro(32, 16) == logic::Macro::Snowball, "devil is snowball");
-    expect(logic::classify_macro(11, 11) == logic::Macro::Snowball, "arena is snowball");
-    expect(logic::classify_macro(32, 32) == logic::Macro::MidContest, "default is mid");
-    expect(logic::classify_macro(25, 25) == logic::Macro::MidContest, "trophy is mid");
-    expect(logic::classify_macro(25, 35) == logic::Macro::MidContest, "queen of spades is mid");
-    expect(logic::classify_macro(48, 24) == logic::Macro::FarmLength, "trauma is farm");
-    expect(logic::classify_macro(60, 40) == logic::Macro::FarmLength, "schooltime is farm");
-    expect(logic::classify_macro(64, 64) == logic::Macro::FarmLength, "big empty is farm");
+void test_combat() {
+    expect(logic::worth_ram(3, 8, 2, false), "short dragon trades up");
+    expect(!logic::worth_ram(3, 5, 2, false), "no ram for a small margin");
+    expect(!logic::worth_ram(3, 20, 1, false), "last dragon never rams by choice");
+    expect(logic::worth_ram(10, 2, 1, true), "cornered dragon takes a head with it");
 
-    logic::MapPolicy farm = logic::make_policy(64, 64, 0, 100);
-    expect(farm.scorer_min_length == 12, "farm scorer length");
-    expect(farm.pearl_horizon == 20, "farm pearl horizon");
-    expect(!farm.portal_bfs, "big empty skips portal search");
-    expect(farm.sector_prefer == 2, "farm sectors are on");
-    logic::MapPolicy school = logic::make_policy(60, 40, 12, 100);
-    expect(school.portal_bfs, "schooltime uses portals");
-    logic::MapPolicy mid = logic::make_policy(32, 32, 0, 100);
-    expect(mid.outer_first, "default farms the outside first");
-    expect(mid.scorer_stop_round == 300, "mid scorer stops splitting at 300");
-    logic::MapPolicy snow = logic::make_policy(16, 16, 0, 50);
-    expect(snow.scorer_min_length == 0, "snowball has no scorer");
+    expect(logic::ram_threat(3, 9, 2, 1) == 0, "a ram by a much longer enemy is welcome");
+    int near = logic::ram_threat(10, 4, 3, 1);
+    int far = logic::ram_threat(10, 4, 3, 2);
+    expect(near > far && far > 0, "a sprint ram is less likely than a step ram");
+    expect(logic::ram_threat(10, 4, 1, 1) > near, "the last dragon guards its head hardest");
+    expect(logic::ram_threat(10, 12, 3, 1) < near, "a longer enemy is less keen to ram");
+}
 
-    logic::AllySnap allies[3];
-    allies[0].id = 4;
-    allies[0].length = 4;
-    allies[1].id = 9;
-    allies[1].length = 4;
-    allies[2].id = 2;
-    allies[2].length = 18;
-    expect(logic::designated_scorer(allies, 3, 100, 12) == 2, "longest ally is the scorer");
-    allies[2].length = 12;
-    allies[2].id = 7;
-    allies[0].id = 3;
-    allies[0].length = 12;
-    expect(logic::designated_scorer(allies, 3, 100, 12) == 3, "tie goes to the lowest id");
-    expect(logic::designated_scorer(allies, 3, 40, 12) == -1, "no scorer before round 80");
-    expect(logic::designated_scorer(allies, 3, 100, 0) == -1, "snowball never designates a scorer");
+void test_pearl_chance() {
+    expect(logic::pearl_chance(false, false, 0, -1, 10, 4) == 4, "fog uses the prior");
+    expect(logic::pearl_chance(true, true, 0, -1, 10, 4) == 100, "a pearl in view is certain");
+    expect(logic::pearl_chance(true, true, 40, -1, 50, 4) < 90, "remembered pearls go stale");
+    expect(logic::pearl_chance(true, false, 0, -1, 10, 4) == 0, "barren tile never pays");
+    expect(logic::pearl_chance(true, false, 0, 20, 10, 4) == 0, "not spawned by arrival");
+    expect(logic::pearl_chance(true, false, 0, 20, 25, 4) > 50, "spawned before arrival");
+}
 
-    std::uint64_t claim = logic::pack_sonar(logic::KIND_CLAIM, 4, 5, 9, 12, 10);
-    logic::SonarMsg claim_msg = logic::unpack_sonar(claim);
-    expect(claim_msg.ok && claim_msg.kind == logic::KIND_CLAIM && claim_msg.x == 4 && claim_msg.y == 5, "claim kind round trips");
-    std::uint64_t sector = logic::pack_sonar(logic::KIND_SECTOR, 1, 2, 3, 8, 10);
-    logic::SonarMsg sector_msg = logic::unpack_sonar(sector);
-    expect(sector_msg.ok && sector_msg.kind == logic::KIND_SECTOR, "sector kind round trips");
-    std::uint64_t scorer = logic::pack_sonar(logic::KIND_SCORER, 6, 7, 20, 2, 90);
-    logic::SonarMsg scorer_msg = logic::unpack_sonar(scorer);
-    expect(scorer_msg.ok && scorer_msg.kind == logic::KIND_SCORER && scorer_msg.aux == 20 && scorer_msg.id == 2, "scorer kind round trips");
+void test_team() {
+    expect(logic::team_cap(11, 11, 64, 12) == 10, "small map keeps a small team");
+    expect(logic::team_cap(64, 64, 64, 12) == 64, "big map fills the unit limit");
+    expect(logic::team_cap(10, 10, 64, 1000) == 4, "cap never drops below a handful");
+    expect(logic::want_split(6, 3, 10, 100, 6, 380), "long enough splits");
+    expect(!logic::want_split(5, 3, 10, 100, 6, 380), "too short to split");
+    expect(!logic::want_split(20, 10, 10, 100, 6, 380), "team full");
+    expect(!logic::want_split(20, 3, 10, 400, 6, 380), "no late splits");
+}
 
-    expect(logic::claim_live(10, 50, false), "claim is live inside 40 rounds");
-    expect(!logic::claim_live(10, 51, false), "claim expires after 40 rounds");
-    expect(!logic::claim_live(10, 20, true), "empty tile drops the claim");
-    expect(logic::sector_axis(64) == 4, "large map clamps to 4 sectors");
-    expect(logic::sector_axis(11) == 2, "small map uses 2 sectors");
-    expect(logic::sector_is_outer(0, 10, 32, 32, 4, 4), "corner sector is outer");
-    expect(!logic::sector_is_outer(16, 16, 32, 32, 4, 4), "center sector is inner");
-    expect(logic::portal_shortcut(6, 1), "portal that saves three steps is worth it");
-    expect(!logic::portal_shortcut(3, 1), "portal that saves only two steps is not");
+void test_feeding() {
+    expect(logic::better_king(9, 5, 8, 1), "longer dragon is king");
+    expect(logic::better_king(9, 2, 9, 5), "ties go to the lower id");
+    expect(!logic::better_king(9, 5, 9, 2), "the higher id loses a tie");
+    expect(!logic::feeding_time(300, 420, 10, 3), "no feeding before the late game");
+    expect(logic::feeding_time(430, 420, 10, 3), "late game feeds");
+    expect(!logic::feeding_time(430, 420, 3, 3), "a few dragons stay back");
+    expect(logic::can_feed_in_time(20, 6, 460, 500), "close enough to feed");
+    expect(!logic::can_feed_in_time(40, 6, 460, 500), "too far to matter");
+}
+
+void test_symmetry() {
+    logic::Point p = logic::mirror_tile(logic::SYM_FLIP_X, 2, 5, 10, 8);
+    expect(p.x == 7 && p.y == 5, "flip x");
+    p = logic::mirror_tile(logic::SYM_FLIP_Y, 2, 5, 10, 8);
+    expect(p.x == 2 && p.y == 2, "flip y");
+    p = logic::mirror_tile(logic::SYM_ROTATE, 2, 5, 10, 8);
+    expect(p.x == 7 && p.y == 2, "rotate");
+    expect(logic::mirror_dir(logic::SYM_FLIP_X, logic::DIR_E) == logic::DIR_W, "flip x swaps east and west");
+    expect(logic::mirror_dir(logic::SYM_FLIP_X, logic::DIR_N) == logic::DIR_N, "flip x keeps north");
+    expect(logic::mirror_dir(logic::SYM_FLIP_Y, logic::DIR_N) == logic::DIR_S, "flip y swaps north and south");
+    expect(logic::mirror_dir(logic::SYM_ROTATE, logic::DIR_W) == logic::DIR_E, "rotate reverses");
+    expect(logic::manhattan(0, 0, 9, 7, 10, 8) == 2, "torus manhattan wraps both ways");
 }
 
 }  // namespace
@@ -221,8 +151,12 @@ int main() {
     test_wrap();
     test_portal();
     test_sonar();
-    test_combat_and_split();
-    test_policy_and_roles();
+    test_body_timing();
+    test_combat();
+    test_pearl_chance();
+    test_team();
+    test_feeding();
+    test_symmetry();
     if (g_failed != 0) {
         std::printf("%d failed\n", g_failed);
         return 1;
