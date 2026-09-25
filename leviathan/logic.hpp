@@ -278,6 +278,36 @@ inline int pearl_chance(bool seen, bool pearl, int age, int spawn_round, int arr
     return chance < 20 ? 20 : chance;
 }
 
+// Chance, in percent, that a tile holds a pearl 'rounds' after its countdown
+// was last drawn from [lo, hi], when we know the gap from the baked map. The
+// first countdown is drawn the same way, and a pearl stays until it is eaten,
+// so the chance climbs to 'keep' (others graze too) once the widest gap has
+// passed. A tile with hi 0 never spawns.
+inline int gap_chance(int lo, int hi, int rounds, int keep) {
+    if (hi <= 0 || rounds < lo) {
+        return 0;
+    }
+    int span = hi - lo + 1;
+    int passed = rounds - lo + 1;
+    if (passed >= span) {
+        return keep;
+    }
+    int chance = keep * passed / span;
+    return chance < 1 ? 1 : chance;
+}
+
+// Long-run share of rounds, in percent, that a tile holds a pearl when it
+// spawns one every (lo + hi) / 2 rounds on average and anything on it is
+// grazed away with 'graze' percent chance each round. Fast tiles stay full
+// most of the time; slow ones are almost always bare, however long unseen.
+inline int steady_chance(int lo, int hi, int graze) {
+    if (hi <= 0) {
+        return 0;
+    }
+    int chance = 20000 / (200 + graze * (lo + hi));
+    return chance < 1 ? 1 : chance;
+}
+
 // Largest team a map can feed: one dragon per 'tiles_each' tiles, at least
 // a handful, never past the engine's unit limit. More heads graze more
 // pearls a round, and more bodies make the team hard to wipe out.
