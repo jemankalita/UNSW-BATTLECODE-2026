@@ -109,6 +109,16 @@ class Brain {
         if (any_safe && try_split(ct, *best_of(plans, true))) {
             return;
         }
+        // A sprint costs a segment. 1900-rated teams sprint 0-4 times a game;
+        // we sprinted 73 times in rounds 80-200 of one Devil loss, which was
+        // the whole gap between their growth and our decline. A single step
+        // that keeps us alive a couple of moves is worth more than a segment.
+        Plan const* squeeze = best_of(plans, false);
+        bool squeeze_lives = squeeze != nullptr && squeeze->lasts >= tuning::SQUEEZE_LASTS;
+        if (!any_safe && squeeze_lives && best_ram(plans, true) == nullptr) {
+            commit(ct, *squeeze, "squeeze");
+            return;
+        }
         if (!any_safe) {
             std::vector<Plan> sprints = walks(2);
             for (Plan& plan : sprints) {
@@ -167,6 +177,8 @@ class Brain {
     king::Tracker king_;
     int feed_target_ = -1;        // king's head while we walk over to feed it
     int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
+    std::vector<int> rich_field_; // blind maps: steps to the nearest tile seen spawning fast
+    int rich_field_round_ = -1000;
     bool pending_portal_ = false;
     int portal_from_ = 0;
     int portal_dir_ = 0;
@@ -604,12 +616,16 @@ class Brain {
                 score += PEARL;
             }
         }
-        score -= static_cast<long long>(threat_[static_cast<std::size_t>(end)]) * THREAT_SCALE;
+        bool hold = holding();
+        score -= static_cast<long long>(threat_[static_cast<std::size_t>(end)]) * THREAT_SCALE *
+                 (hold ? tuning::HOLD_THREAT : 100) / 100;
         score += static_cast<long long>(std::min(plan.room, need * 2 + 8)) * ROOM_STEP;
         if (plan.dirs.front() == facing_) {
             score += STRAIGHT;
         }
-        score -= crowding(end);
+        if (!hold) {
+            score -= crowding(end);
+        }
         score += rich_pull(end);
         if (plan.portal) {
             score -= PORTAL_RISK;
@@ -636,13 +652,84 @@ class Brain {
     // Far from any rich tile, every step closer is worth part of a pearl, so
     // dragons leave a starving region (Trauma's spawns are walled off from
     // their fountains except through portals) instead of grazing it bare.
-    long long rich_pull(int end) const {
-        int here = map_.rich_dist(head_);
-        int there = map_.rich_dist(end);
-        if (here <= tuning::RICH_NEAR || there < 0 || !map_.starving_region(head_)) {
+    // Steps to the nearest rich tile: the baked map's field when we know the
+    // map, else one built from tiles we have watched spawn fast (a new map,
+    // as in the sprint tournament). -1 when none is known.
+    int rich_distance(int cell) {
+        if (map_.known() != nullptr) {
+            return map_.rich_dist(cell);
+        }
+        if (round_ - rich_field_round_ >= tuning::RICH_FIELD_EVERY || rich_field_.empty()) {
+            build_rich_field();
+        }
+        return rich_field_[static_cast<std::size_t>(cell)];
+    }
+
+    bool regrows_fast(int cell) const {
+        int lo = 0;
+        int hi = 0;
+        return map_.gap(cell, lo, hi) && hi > 0 && hi <= tuning::FAST_SEEN;
+    }
+
+    // A tile is rich once every countdown we have read there was short.
+    void build_rich_field() {
+        rich_field_round_ = round_;
+        rich_field_.assign(static_cast<std::size_t>(n_), -1);
+        std::vector<int> queue;
+        for (int i = 0; i < n_; ++i) {
+            world::Cell const& c = map_.cell(i);
+            bool read = c.seen || c.timed;
+            if (read && c.spawn_round >= 0 && c.max_countdown > 0 && c.max_countdown <= tuning::FAST_SEEN) {
+                rich_field_[static_cast<std::size_t>(i)] = 0;
+                queue.push_back(i);
+            }
+        }
+        for (std::size_t q = 0; q < queue.size(); ++q) {
+            int cell = queue[q];
+            int next = rich_field_[static_cast<std::size_t>(cell)] + 1;
+            for (int dir = 0; dir < 4; ++dir) {
+                world::Landing land = map_.step(cx(cell), cy(cell), dir, true);
+                if (!land.ok || land.unknown_exit) {
+                    continue;
+                }
+                int to = map_.index(land.x, land.y);
+                if (rich_field_[static_cast<std::size_t>(to)] < 0) {
+                    rich_field_[static_cast<std::size_t>(to)] = next;
+                    queue.push_back(to);
+                }
+            }
+        }
+    }
+
+    // Zone play, as the 1900-rated teams do: in the opening every dragon
+    // races for the nearest rich cluster (they hold Devil's centre by round
+    // 40 and we starve on a third of the map), and later a dragon walled off
+    // from food heads for it through portals.
+    long long rich_pull(int end) {
+        int here = rich_distance(head_);
+        int there = rich_distance(end);
+        if (here < 0 || there < 0) {
+            return 0;
+        }
+        if (round_ < tuning::RUSH_ROUNDS && here > tuning::RUSH_NEAR) {
+            return static_cast<long long>(here - there) * tuning::RUSH_PULL * PEARL / 10;
+        }
+        if (here <= tuning::RICH_NEAR || !map_.starving_region(head_)) {
             return 0;
         }
         return static_cast<long long>(here - there) * tuning::RICH_PULL * PEARL / 10;
+    }
+
+    // Inside a rich zone we hold ground: packed together and trading heads
+    // is how the zone is kept, so crowding and ram risk count for less.
+    bool holding() {
+        // Only on a baked map: on unknown maps (random test maps, the
+        // sprint's new map) holding tested worse, 15-21 against 21-15.
+        if (map_.known() == nullptr) {
+            return false;
+        }
+        int here = rich_distance(head_);
+        return here >= 0 && here <= tuning::HOLD_RADIUS;
     }
 
     // The same trade in any small dead-end pocket, not only one-wide
@@ -1076,7 +1163,11 @@ class Brain {
         for (Other const& other : others_) {
             int theirs = logic::manhattan(cx(cell), cy(cell), other.x, other.y, w_, h_);
             if (theirs < t + (other.enemy ? 0 : 1) || (theirs == t + 1 && other.id < id_)) {
-                chance = chance * (other.enemy ? tuning::ENEMY_CONTEST : 30) / 100;
+                // A tile that regrows within a few rounds feeds a queue of
+                // allies; only slow tiles are worth leaving to the one who
+                // gets there first.
+                int ally_share = regrows_fast(cell) ? 100 : 30;
+                chance = chance * (other.enemy ? tuning::ENEMY_CONTEST : ally_share) / 100;
             }
         }
         return gamma_[static_cast<std::size_t>(t)] * chance / 100;
