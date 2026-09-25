@@ -69,13 +69,18 @@ static constexpr int KING_HOLD_ROUND = 300;
 static constexpr int FEED_MIN_TILES = 0;
 // From this round the team feeds its king (0 turns feeding off) ...
 static constexpr int FEED_ROUND = 420;
+// ... or this round on maps smaller than FEED_CAP_TILES, leaving the enemy
+// less time to pick off a swarm that fed itself down. Full feeding from 450
+// beat capping at half from 420: 56-32 vs 53-35 against v5 locally, and 8/12
+// vs 6/12 in the same unranked ladder games (Ravenus 3/4 vs 1/4).
+static constexpr int FEED_ROUND_SMALL = 450;
 // ... keeping this many dragons (king included) out of it ...
 static constexpr int FEED_KEEP = 3;
 // ... and this share, in percent, of the team it began with (0: no cap).
 // Feeding all but three got v7 eliminated from 19 dragons against 9 on
 // Default Small, but a 50% cap lost 6-12 to v5 locally, where every
 // opponent feeds and games end on the longest dragon; left off for now.
-static constexpr int FEED_SHARE = 50;
+static constexpr int FEED_SHARE = 0;
 // The cap applies only on maps smaller than this. On big maps games go the
 // distance and the longest dragon decides: capped feeding lost Stronghold
 // 0/8 against 6/8 uncapped. On small maps ladder teams eliminate a team

@@ -220,12 +220,14 @@ class Brain {
             ct.send_sonar(to_direction(dir), king_.message());
         }
         feed_target_ = -1;
-        if (round_ >= tuning::FEED_ROUND && feed_floor_ < 0) {
-            int share = w_ * h_ < tuning::FEED_CAP_TILES ? tuning::FEED_SHARE : 0;
+        bool small_map = w_ * h_ < tuning::FEED_CAP_TILES;
+        int feed_round = small_map ? tuning::FEED_ROUND_SMALL : tuning::FEED_ROUND;
+        if (round_ >= feed_round && feed_floor_ < 0) {
+            int share = small_map ? tuning::FEED_SHARE : 0;
             feed_floor_ = logic::feed_floor(units_, tuning::FEED_KEEP, share);
         }
         if (w_ * h_ < tuning::FEED_MIN_TILES ||
-            !logic::feeding_time(round_, tuning::FEED_ROUND, units_, std::max(feed_floor_, tuning::FEED_KEEP))) {
+            !logic::feeding_time(round_, feed_round, units_, std::max(feed_floor_, tuning::FEED_KEEP))) {
             return;
         }
         king::Report const& target = king_.best();
