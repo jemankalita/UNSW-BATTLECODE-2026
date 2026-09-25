@@ -61,6 +61,23 @@ static constexpr int ONE_WAY_INTO_CENTRE = 1;
 static constexpr int RICH_NEAR = 3;
 // ... each step closer is worth this many tenths of a pearl.
 static constexpr int RICH_PULL = 5;
+// Zone play. Until this round every dragon farther than RUSH_NEAR steps
+// from a rich tile is pulled toward one, ...
+static constexpr int RUSH_ROUNDS = 0;  // the rush lost 39-49 to v13
+static constexpr int RUSH_NEAR = 2;
+// ... at this many tenths of a pearl per step.
+static constexpr int RUSH_PULL = 6;
+// Within this many steps of a rich tile a dragon holds ground: crowding is
+// ignored and ram risk counts this percent.
+static constexpr int HOLD_RADIUS = 3;
+static constexpr int HOLD_THREAT = 35;
+// On a map we do not know, a tile is rich once no countdown read there
+// exceeded this; the field is rebuilt every few rounds.
+static constexpr int FAST_SEEN = 20;
+static constexpr int RICH_FIELD_EVERY = 4;
+// With no safe move, a single step that the look-ahead keeps alive this
+// many moves beats paying a segment for a two-step escape.
+static constexpr int SQUEEZE_LASTS = 2;
 // Nook diving: only dragons at most this long dive (a long dragon is worth
 // more alive), ...
 static constexpr int DIVE_MAX_LEN = 6;
