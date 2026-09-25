@@ -13,8 +13,12 @@ static constexpr int FOG_PRIOR = 4;
 static constexpr int GRAZE = 5;
 // How the baked pearl gaps price tiles: 0 not at all (edges only), 1 only
 // rules out tiles that never spawn, 2 also prices every tile by its gap.
-// Level 2 lost 32-22 to level 0's 39-15 in local games, so it stays off.
-static constexpr int KNOWN_VALUE = 0;
+// Level 2 lost 32-22 to level 0's 39-15 in local games against our own
+// bots. In unranked ladder games against the same teams on the same maps
+// it ate more by round 100 (Queen of Spades 180 vs 66, Trophy 141 vs 98)
+// but won no more (4/40 with the feeding cap vs 6/40). On with the v8
+// aggressive settings: 5/12 on Default Small/Trophy/Autarky, same as off.
+static constexpr int KNOWN_VALUE = 2;
 // A dragon splits off a farmer once it is at least this long ...
 static constexpr int SPLIT_LEN = 4;
 // ... and only up to this round.
@@ -25,20 +29,57 @@ static constexpr int CHILD_SIZE = 2;
 // pearl); 0 splits whenever the child has room to move.
 static constexpr int SPLIT_CAREFUL = 0;
 // Free tiles a newborn child needs around it.
-static constexpr int CHILD_ROOM = 4;
+static constexpr int CHILD_ROOM = 2;
+// 1 splits even where an enemy head could reach us next turn.
+// v8 copies the top teams: split at every chance, even under threat.
+static constexpr int SPLIT_UNDER_THREAT = 1;
 // Map tiles per dragon when sizing the team.
-static constexpr int TILES_PER_DRAGON = 12;
+static constexpr int TILES_PER_DRAGON = 4;
+// A short dragon rams an enemy head at least this much longer (both die).
+static constexpr int RAM_MARGIN = 1;
+// Percent of a tile's pearl we still count when an enemy head is closer.
+static constexpr int ENEMY_CONTEST = 80;
 // Worth, in tenths of a pearl, of stepping through a portal whose far end
 // we have never seen. Unexplored water behind portals is where the pearls
 // pile up on portal-heavy maps.
 static constexpr int EXPLORE_PORTAL = 25;
+// Portals against friendly fire: 1 makes each crossing one-way (team B by
+// mirrored tile order) on even rounds; 0 opens both ways in 4-round slots.
+static constexpr int PORTAL_ONE_WAY = 0;
+// ... except on this baked map, which always runs one-way.
+static constexpr char const* ONE_WAY_MAP = "Trophy";
+// More than this many steps from the nearest rich tile of a baked map, ...
+// Only in regions with no rich tile on foot (world.hpp starving_region):
+// pulling Trophy's dragons into its contested centre lost 1/8 vs 5/8.
+static constexpr int RICH_NEAR = 3;
+// ... each step closer is worth this many tenths of a pearl.
+static constexpr int RICH_PULL = 5;
+// Nook diving: only dragons at most this long dive (a long dragon is worth
+// more alive), ...
+static constexpr int DIVE_MAX_LEN = 6;
+// ... through at most this many one-wide tiles, ...
+static constexpr int DIVE_DEPTH = 8;
+// ... pricing each child it splits out at this many pearls.
+static constexpr int DIVE_CHILD = 2;
 // From this round the dragon that believes it is the king stops splitting,
 // so it enters the feeding with a head start: it eats at most one pearl a
 // round, and the tiebreak is the longest single dragon.
 static constexpr int KING_HOLD_ROUND = 300;
+// Feeding only on maps at least this many tiles (0: every map).
+static constexpr int FEED_MIN_TILES = 0;
 // From this round the team feeds its king (0 turns feeding off) ...
 static constexpr int FEED_ROUND = 420;
-// ... keeping this many dragons (king included) out of it.
+// ... keeping this many dragons (king included) out of it ...
 static constexpr int FEED_KEEP = 3;
+// ... and this share, in percent, of the team it began with (0: no cap).
+// Feeding all but three got v7 eliminated from 19 dragons against 9 on
+// Default Small, but a 50% cap lost 6-12 to v5 locally, where every
+// opponent feeds and games end on the longest dragon; left off for now.
+static constexpr int FEED_SHARE = 50;
+// The cap applies only on maps smaller than this. On big maps games go the
+// distance and the longest dragon decides: capped feeding lost Stronghold
+// 0/8 against 6/8 uncapped. On small maps ladder teams eliminate a team
+// that fed itself down (Default Small, Autarky replays).
+static constexpr int FEED_CAP_TILES = 1100;
 
 }  // namespace tuning

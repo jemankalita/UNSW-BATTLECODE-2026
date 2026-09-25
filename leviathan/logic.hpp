@@ -225,21 +225,21 @@ inline int room_needed(int length) {
 // Moving into an enemy head kills both dragons. Worth it when trading up by a
 // clear margin, never for our last dragon (that is at best a draw), and
 // always when every other move is death anyway.
-inline bool worth_ram(int self_len, int enemy_len, int allies, bool cornered) {
+inline bool worth_ram(int self_len, int enemy_len, int allies, bool cornered, int margin = 3) {
     if (cornered) {
         return true;
     }
     if (allies <= 1) {
         return false;
     }
-    return enemy_len >= self_len + 3;
+    return enemy_len >= self_len + margin;
 }
 
 // Expected cost of ending a move where an enemy head can reach ours next
 // turn: 'reach' 1 is a plain step, 2 needs a sprint. A ram costs our whole
 // length, and a rational enemy rams when it is not the bigger loser.
-inline int ram_threat(int self_len, int enemy_len, int allies, int reach) {
-    if (allies > 1 && enemy_len >= self_len + 3) {
+inline int ram_threat(int self_len, int enemy_len, int allies, int reach, int margin = 3) {
+    if (allies > 1 && enemy_len >= self_len + margin) {
         return 0;
     }
     int stake = 40 + 12 * self_len;
@@ -339,6 +339,14 @@ inline bool better_king(int len_a, int id_a, int len_b, int id_b) {
 // dragons are kept back so the team cannot be wiped out.
 inline bool feeding_time(int round, int feed_round, int units, int keep) {
     return round >= feed_round && units > keep;
+}
+
+// The king eats at most a pearl a round, so only so many feeders can help,
+// and every dragon fed is one fewer to stop an elimination. Feeding stops
+// once the team is down to 'share' percent of its size when it began.
+inline int feed_floor(int units, int keep, int share) {
+    int floor = units * share / 100;
+    return floor > keep ? floor : keep;
 }
 
 // A feeder only helps if it arrives with time for the king to eat what it

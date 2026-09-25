@@ -167,6 +167,8 @@ void test_gap_chance() {
     expect(logic::steady_chance(0, 0, 5) == 0, "dead tile stays bare");
     expect(logic::steady_chance(1, 50, 5) == 43, "fast tile mostly full");
     expect(logic::steady_chance(1, 1000, 5) == 3, "slow tile mostly bare");
+    expect(logic::feed_floor(20, 3, 50) == 10, "feed half the team at most");
+    expect(logic::feed_floor(4, 3, 50) == 3, "never below the minimum kept");
 }
 
 // Every baked map is internally consistent, and its kelp is symmetric the
