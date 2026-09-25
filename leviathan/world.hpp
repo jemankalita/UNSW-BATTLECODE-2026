@@ -197,6 +197,15 @@ class Map {
     // hold no rich tile: Stronghold's and Trauma's spawns and the part of
     // Queen of Spades outside its fountain room. Only there does it pay to
     // head for food far away; elsewhere it pulls dragons into a crowd.
+    // Tiles in the on-foot region of 'cell'; 0 when the map is not baked.
+    int region_size(int cell) const {
+        return region_size_.empty() ? 0 : region_size_[static_cast<std::size_t>(cell)];
+    }
+
+    bool same_region(int a, int b) const {
+        return !region_id_.empty() && region_id_[static_cast<std::size_t>(a)] == region_id_[static_cast<std::size_t>(b)];
+    }
+
     bool starving_region(int cell) const {
         return !region_rich_.empty() && region_rich_[static_cast<std::size_t>(cell)] == 0;
     }
@@ -218,6 +227,8 @@ class Map {
     bool team_b_ = false;
     std::vector<int> rich_dist_;        // steps to the nearest rich tile, baked maps only
     std::vector<char> region_rich_;     // whether each tile's on-foot region holds a rich tile
+    std::vector<int> region_size_;      // tiles in each tile's on-foot region
+    std::vector<int> region_id_;        // lowest tile index of each tile's on-foot region
 
     static constexpr signed char SLOT_NONE = -1;
     static constexpr signed char SLOT_MIXED = -2;
@@ -339,14 +350,17 @@ class Map {
                 into[static_cast<std::size_t>(landing)].push_back(key / 4);
             }
         }
+        label_regions();
         std::vector<int> queue;
         for (int i = 0; i < size(); ++i) {
-            if (is_rich(i)) {
+            // A rich tile in a pocket too small to live in (Queen of Spades'
+            // 16-tile fountain rooms, entered only by portal) is a trap, not
+            // a destination: pulling toward them lost QoS 0/16 vs 7/16.
+            if (is_rich(i) && region_size_[static_cast<std::size_t>(i)] >= RICH_REGION_MIN) {
                 rich_dist_[static_cast<std::size_t>(i)] = 0;
                 queue.push_back(i);
             }
         }
-        label_regions();
         for (std::size_t q = 0; q < queue.size(); ++q) {
             int cell = queue[q];
             int next = rich_dist_[static_cast<std::size_t>(cell)] + 1;
@@ -381,6 +395,8 @@ class Map {
     // a rich tile.
     void label_regions() {
         region_rich_.assign(static_cast<std::size_t>(size()), 0);
+        region_size_.assign(static_cast<std::size_t>(size()), 0);
+        region_id_.assign(static_cast<std::size_t>(size()), -1);
         std::vector<int> region(static_cast<std::size_t>(size()), -1);
         for (int start = 0; start < size(); ++start) {
             if (region[static_cast<std::size_t>(start)] >= 0) {
@@ -406,11 +422,17 @@ class Map {
             }
             for (int cell : members) {
                 region_rich_[static_cast<std::size_t>(cell)] = rich ? 1 : 0;
+                region_size_[static_cast<std::size_t>(cell)] = static_cast<int>(members.size());
+                region_id_[static_cast<std::size_t>(cell)] = start;
             }
         }
     }
 
     static constexpr int RICH_GRAZE = 5;
+  public:
+    static constexpr int RICH_REGION_MIN = 40;
+
+  private:
     static constexpr int RICH_MIN = 30;
 
     // Record, for both tiles beside edge 'from', where crossing it lands:
