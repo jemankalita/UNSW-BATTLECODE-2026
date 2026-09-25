@@ -13,7 +13,10 @@ static constexpr int FOG_PRIOR = 4;
 static constexpr int GRAZE = 5;
 // How the baked pearl gaps price tiles: 0 not at all (edges only), 1 only
 // rules out tiles that never spawn, 2 also prices every tile by its gap.
-// Level 2 lost 32-22 to level 0's 39-15 in local games, so it stays off.
+// Level 2 lost 32-22 to level 0's 39-15 in local games against our own
+// bots. In unranked ladder games against the same teams on the same maps
+// it ate more by round 100 (Queen of Spades 180 vs 66, Trophy 141 vs 98)
+// but won no more (4/40 with the feeding cap vs 6/40), so it stays off.
 static constexpr int KNOWN_VALUE = 0;
 // A dragon splits off a farmer once it is at least this long ...
 static constexpr int SPLIT_LEN = 4;
@@ -36,9 +39,16 @@ static constexpr int EXPLORE_PORTAL = 25;
 // so it enters the feeding with a head start: it eats at most one pearl a
 // round, and the tiebreak is the longest single dragon.
 static constexpr int KING_HOLD_ROUND = 300;
+// Feeding only on maps at least this many tiles (0: every map).
+static constexpr int FEED_MIN_TILES = 0;
 // From this round the team feeds its king (0 turns feeding off) ...
 static constexpr int FEED_ROUND = 420;
-// ... keeping this many dragons (king included) out of it.
+// ... keeping this many dragons (king included) out of it ...
 static constexpr int FEED_KEEP = 3;
+// ... and this share, in percent, of the team it began with (0: no cap).
+// Feeding all but three got v7 eliminated from 19 dragons against 9 on
+// Default Small, but a 50% cap lost 6-12 to v5 locally, where every
+// opponent feeds and games end on the longest dragon; left off for now.
+static constexpr int FEED_SHARE = 0;
 
 }  // namespace tuning

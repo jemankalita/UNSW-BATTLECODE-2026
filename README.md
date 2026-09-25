@@ -70,6 +70,12 @@ tools/mapdb.py      bakes .map files into leviathan/mapdb.hpp
 - **Trade up.** A short dragon rams a clearly longer enemy head (both die),
   and a cornered dragon takes an enemy head with it. Longer dragons price the
   risk of ending a move where an enemy head could reach them.
+- **No friendly fire.** Ladder replays showed our heads killing each other
+  more often than the enemy did: allies queued at opposite mouths of a
+  portal crossed into each other's heads, and a trapped dragon walked
+  straight into an ally. Portals are now one-way for our team (lower tile
+  index to higher) on even rounds only, walking onto an exit mouth is
+  priced as a risk, and a doomed dragon dies alone or into an enemy.
 - **Hold the king.** From round 300 the dragon that believes it is the
   longest stops splitting. It can eat at most a pearl a round, so it needs
   that head start before the feeding begins.
@@ -103,7 +109,8 @@ generated.
 
 | matchup | result |
 |---|---|
-| v6 vs v5 / v4 / v3 (9 ranked maps, both sides) | 7-11 / 13-5 / 18-0 (v5's own record: 9-9 / 12-6 / 18-0) |
+| v7 vs v5 / v4 / v3 (9 ranked maps, both sides) | 11-7 / 13-5 / 18-0 |
+| v6 vs v5 / v4 / v3 | 7-11 / 13-5 / 18-0 (v5's own record: 9-9 / 12-6 / 18-0) |
 | v5 (portal exploration, eager splits) vs v4 (33 maps) | 47 W / 19 L |
 | v4 vs `main`'s v3 (35 maps) | 70 W / 0 L |
 | v4 vs stock starter (35 maps) | 70 W / 0 L |
@@ -113,6 +120,11 @@ Games are deterministic, so one map played twice is two games, and a small
 change reshuffles outcomes; treat differences of a few games as noise.
 Pricing tiles by their baked pearl gaps (`KNOWN_VALUE` 2) lost 32-22 against
 the same three opponents, so v6 uses the baked maps for edges and portals only.
+
+Unranked ladder A/B (8 teams rated 1545-2064, 5 small maps, 40 games per
+version): v7 won 6, v7 with gap pricing and a 50% feeding cap won 4. Those
+teams beat us by holding the fast tiles with bigger swarms mid-game; see the
+PR for the replay numbers.
 
 Settings that tested neutral or worse and were left out: one dragon per 8
 tiles (34–32), feeding from round 400 (29–37), keeping 8 dragons out of

@@ -165,6 +165,7 @@ class Brain {
     int deepest_ = 0;
     king::Tracker king_;
     int feed_target_ = -1;        // king's head while we walk over to feed it
+    int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
     bool pending_portal_ = false;
     int portal_from_ = 0;
     int portal_dir_ = 0;
@@ -217,7 +218,11 @@ class Brain {
             ct.send_sonar(to_direction(dir), king_.message());
         }
         feed_target_ = -1;
-        if (!logic::feeding_time(round_, tuning::FEED_ROUND, units_, tuning::FEED_KEEP)) {
+        if (round_ >= tuning::FEED_ROUND && feed_floor_ < 0) {
+            feed_floor_ = logic::feed_floor(units_, tuning::FEED_KEEP, tuning::FEED_SHARE);
+        }
+        if (w_ * h_ < tuning::FEED_MIN_TILES ||
+            !logic::feeding_time(round_, tuning::FEED_ROUND, units_, std::max(feed_floor_, tuning::FEED_KEEP))) {
             return;
         }
         king::Report const& target = king_.best();

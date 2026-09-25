@@ -341,6 +341,14 @@ inline bool feeding_time(int round, int feed_round, int units, int keep) {
     return round >= feed_round && units > keep;
 }
 
+// The king eats at most a pearl a round, so only so many feeders can help,
+// and every dragon fed is one fewer to stop an elimination. Feeding stops
+// once the team is down to 'share' percent of its size when it began.
+inline int feed_floor(int units, int keep, int share) {
+    int floor = units * share / 100;
+    return floor > keep ? floor : keep;
+}
+
 // A feeder only helps if it arrives with time for the king to eat what it
 // leaves: the walk there, plus about a move for each pearl its body drops.
 inline bool can_feed_in_time(int distance, int length, int round, int last_round) {
