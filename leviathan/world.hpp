@@ -57,7 +57,7 @@ struct Landing {
 class Map {
   public:
     Map(int width, int height) : width_(width), height_(height), cells_(static_cast<std::size_t>(width * height)) {
-        for (int i = 0; i < mapdb::MAP_COUNT; ++i) {
+        for (int i = 0; i < mapdb::MAP_COUNT && tuning::USE_BAKED_MAPS; ++i) {
             if (mapdb::MAPS[i].width == width && mapdb::MAPS[i].height == height) {
                 candidates_.push_back(i);
             }

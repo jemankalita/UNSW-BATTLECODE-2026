@@ -618,7 +618,8 @@ class Brain {
             score -= MOUTH_RISK;
         }
         long long dive_score = 0;
-        if (!plan.safe && steps == 1 && !plan.portal && dive_worth(plan, dive_score)) {
+        if (!plan.safe && steps == 1 && !plan.portal &&
+            (dive_worth(plan, dive_score) || pocket_worth(plan, dive_score))) {
             plan.safe = true;
             plan.dive = true;
             score = dive_score;
@@ -642,6 +643,76 @@ class Brain {
             return 0;
         }
         return static_cast<long long>(here - there) * tuning::RICH_PULL * PEARL / 10;
+    }
+
+    // The same trade in any small dead-end pocket, not only one-wide
+    // corridors: Devil's every-round tiles sit in two-wide pockets that
+    // 1900-rated teams dive into from round 30 (135-173 splits by round 150
+    // against our 8-37). The pocket is what the head can reach past this
+    // step without coming back through the tile it left. It must be small,
+    // hold pearls in view, and our body once fed must be at least as long as
+    // the pocket, so the tail (where each child is born) sits at its mouth.
+    bool pocket_worth(Plan const& plan, long long& score) {
+        if (round_ > tuning::SPLIT_LAST_ROUND || len_ > tuning::DIVE_MAX_LEN) {
+            return false;
+        }
+        king::Report const& crown = king_.best();
+        if (round_ >= tuning::KING_HOLD_ROUND && crown.valid && crown.id == id_) {
+            return false;
+        }
+        int entry = plan.cells.back();
+        int stamp = next_stamp();
+        mark_[static_cast<std::size_t>(head_)] = stamp;
+        mark_[static_cast<std::size_t>(entry)] = stamp;
+        std::vector<int> pocket{entry};
+        int pearls = pearl_now(entry) ? 1 : 0;
+        for (std::size_t q = 0; q < pocket.size(); ++q) {
+            int cell = pocket[q];
+            for (int dir = 0; dir < 4; ++dir) {
+                world::Landing land = map_.step(cx(cell), cy(cell), dir, true);
+                if (!land.ok) {
+                    continue;
+                }
+                if (land.portal) {
+                    return false;  // a way out: not a dead end
+                }
+                int to = map_.index(land.x, land.y);
+                if (mark_[static_cast<std::size_t>(to)] == stamp) {
+                    continue;
+                }
+                if (occ_[static_cast<std::size_t>(to)] >= 0 && occ_[static_cast<std::size_t>(to)] != id_) {
+                    return false;  // someone is already in there
+                }
+                if (std::find(body_.begin(), body_.end(), to) != body_.end()) {
+                    continue;  // our own body closes the pocket behind us
+                }
+                mark_[static_cast<std::size_t>(to)] = stamp;
+                pocket.push_back(to);
+                if (static_cast<int>(pocket.size()) > tuning::POCKET_MAX) {
+                    return false;
+                }
+                if (pearl_now(to)) {
+                    ++pearls;
+                }
+            }
+        }
+        int size = static_cast<int>(pocket.size());
+        int eaten = std::min(pearls, size - 1);
+        int length = len_ + eaten;
+        if (pearls < 1 || length < size) {
+            return false;
+        }
+        int children = std::min((length - 2) / tuning::CHILD_SIZE, limit_ - units_);
+        if (children < 1) {
+            return false;
+        }
+        for (Other const& other : others_) {
+            if (other.enemy && logic::manhattan(cx(head_), cy(head_), other.x, other.y, w_, h_) <= 3) {
+                return false;
+            }
+        }
+        score = static_cast<long long>(eaten) * PEARL + static_cast<long long>(children) * tuning::DIVE_CHILD * PEARL;
+        return true;
     }
 
     // The top ladder teams farm fast tiles that sit at the end of one-wide
