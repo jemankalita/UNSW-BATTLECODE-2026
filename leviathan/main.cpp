@@ -393,7 +393,7 @@ class Brain {
                         if (occ_[static_cast<std::size_t>(to)] >= 0 && to != head_) {
                             continue;
                         }
-                        int cost = logic::ram_threat(len_, other.len, units_, reach);
+                        int cost = logic::ram_threat(len_, other.len, units_, reach, tuning::RAM_MARGIN);
                         if (cost > threat_[static_cast<std::size_t>(to)]) {
                             if (threat_[static_cast<std::size_t>(to)] == 0) {
                                 threat_list_.push_back(to);
@@ -883,7 +883,7 @@ class Brain {
         for (Other const& other : others_) {
             int theirs = logic::manhattan(cx(cell), cy(cell), other.x, other.y, w_, h_);
             if (theirs < t + (other.enemy ? 0 : 1) || (theirs == t + 1 && other.id < id_)) {
-                chance = chance * (other.enemy ? 50 : 30) / 100;
+                chance = chance * (other.enemy ? tuning::ENEMY_CONTEST : 30) / 100;
             }
         }
         return gamma_[static_cast<std::size_t>(t)] * chance / 100;
@@ -896,7 +896,7 @@ class Brain {
             return 0;
         }
         int theirs = enemy_len_at(cell);
-        if (!logic::worth_ram(len_, theirs, units_, false)) {
+        if (!logic::worth_ram(len_, theirs, units_, false, tuning::RAM_MARGIN)) {
             return 0;
         }
         return gamma_[static_cast<std::size_t>(t)] * (100 + 10 * theirs) / 100;
@@ -920,7 +920,7 @@ class Brain {
     Plan const* best_ram(std::vector<Plan> const& plans, bool cornered) const {
         Plan const* best = nullptr;
         for (Plan const& plan : plans) {
-            if (plan.ram_len <= 0 || !logic::worth_ram(len_, plan.ram_len, units_, cornered)) {
+            if (plan.ram_len <= 0 || !logic::worth_ram(len_, plan.ram_len, units_, cornered, tuning::RAM_MARGIN)) {
                 continue;
             }
             if (best == nullptr || plan.ram_len > best->ram_len) {
@@ -937,7 +937,7 @@ class Brain {
         if (!logic::want_split(len_, units_, cap, round_, tuning::SPLIT_LEN, tuning::SPLIT_LAST_ROUND)) {
             return false;
         }
-        if (!ct.can_split(tuning::CHILD_SIZE) || threat_[static_cast<std::size_t>(head_)] > 0) {
+        if (!ct.can_split(tuning::CHILD_SIZE) || (!tuning::SPLIT_UNDER_THREAT && threat_[static_cast<std::size_t>(head_)] > 0)) {
             return false;
         }
         king::Report const& crown = king_.best();

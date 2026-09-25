@@ -16,8 +16,9 @@ static constexpr int GRAZE = 5;
 // Level 2 lost 32-22 to level 0's 39-15 in local games against our own
 // bots. In unranked ladder games against the same teams on the same maps
 // it ate more by round 100 (Queen of Spades 180 vs 66, Trophy 141 vs 98)
-// but won no more (4/40 with the feeding cap vs 6/40), so it stays off.
-static constexpr int KNOWN_VALUE = 0;
+// but won no more (4/40 with the feeding cap vs 6/40). On with the v8
+// aggressive settings: 5/12 on Default Small/Trophy/Autarky, same as off.
+static constexpr int KNOWN_VALUE = 2;
 // A dragon splits off a farmer once it is at least this long ...
 static constexpr int SPLIT_LEN = 4;
 // ... and only up to this round.
@@ -28,9 +29,16 @@ static constexpr int CHILD_SIZE = 2;
 // pearl); 0 splits whenever the child has room to move.
 static constexpr int SPLIT_CAREFUL = 0;
 // Free tiles a newborn child needs around it.
-static constexpr int CHILD_ROOM = 4;
+static constexpr int CHILD_ROOM = 2;
+// 1 splits even where an enemy head could reach us next turn.
+// v8 copies the top teams: split at every chance, even under threat.
+static constexpr int SPLIT_UNDER_THREAT = 1;
 // Map tiles per dragon when sizing the team.
-static constexpr int TILES_PER_DRAGON = 12;
+static constexpr int TILES_PER_DRAGON = 4;
+// A short dragon rams an enemy head at least this much longer (both die).
+static constexpr int RAM_MARGIN = 1;
+// Percent of a tile's pearl we still count when an enemy head is closer.
+static constexpr int ENEMY_CONTEST = 80;
 // Worth, in tenths of a pearl, of stepping through a portal whose far end
 // we have never seen. Unexplored water behind portals is where the pearls
 // pile up on portal-heavy maps.
