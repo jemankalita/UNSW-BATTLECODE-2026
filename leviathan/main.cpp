@@ -959,7 +959,7 @@ class Brain {
         // A pocket too small to live in, reached only by portal (Queen of
         // Spades' 16-tile fountain rooms), is a trap: dragons that go in
         // for its pearls jam the doorway and starve. Price it as fog.
-        if (baked && map_.region_size(cell) < world::Map::RICH_REGION_MIN && !map_.same_region(cell, head_)) {
+        if (baked && map_.living_room(cell) < world::Map::RICH_REGION_MIN && !map_.same_region(cell, head_)) {
             baked = false;
             lo = 0;
             hi = 0;

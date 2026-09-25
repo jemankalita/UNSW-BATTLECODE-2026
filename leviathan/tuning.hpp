@@ -48,6 +48,8 @@ static constexpr int EXPLORE_PORTAL = 25;
 static constexpr int PORTAL_ONE_WAY = 0;
 // ... except on this baked map, which always runs one-way.
 static constexpr char const* ONE_WAY_MAP = "Trophy";
+// 1 runs that map's portal into its centre instead of out of it.
+static constexpr int ONE_WAY_INTO_CENTRE = 1;
 // More than this many steps from the nearest rich tile of a baked map, ...
 // Only in regions with no rich tile on foot (world.hpp starving_region):
 // pulling Trophy's dragons into its contested centre lost 1/8 vs 5/8.
