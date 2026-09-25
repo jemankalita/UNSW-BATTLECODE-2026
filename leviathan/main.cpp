@@ -956,6 +956,17 @@ class Brain {
         int hi = 0;
         bool baked = tuning::KNOWN_VALUE != 0 && map_.gap(cell, lo, hi);
         bool dead = baked && hi <= 0;
+        // A pocket too small to live in, reached only by portal (Queen of
+        // Spades' 16-tile fountain rooms), is a trap: dragons that go in
+        // for its pearls jam the doorway and starve. Price it as fog.
+        if (baked && map_.region_size(cell) < world::Map::RICH_REGION_MIN && !map_.same_region(cell, head_)) {
+            baked = false;
+            lo = 0;
+            hi = 0;
+            if (!c.seen) {
+                return gamma_[static_cast<std::size_t>(t)] * tuning::FOG_PRIOR / 100;
+            }
+        }
         baked = baked && tuning::KNOWN_VALUE >= 2;
         if (dead) {
             chance = 0;
