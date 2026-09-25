@@ -129,6 +129,22 @@ class Map {
     // that, so a wrong guess about a portal is made at most once.
     void learn_exit(int x, int y, int dir, int ex, int ey) {
         exits_[exit_key(x, y, dir)] = index(ex, ey);
+        mark_mouth(index(x, y), index(ex, ey));
+    }
+
+    // Portals are one-way for our team, from the lower tile index to the
+    // higher, and only on even rounds. Two allies queued at opposite mouths
+    // would otherwise cross into each other's heads, which neither can see:
+    // on the ladder that killed more of our dragons than the enemy did.
+    // A dragon that arrives on an even round leaves on the odd one, so the
+    // exit mouth is clear by the next crossing.
+    static bool crossing_allowed(int from, int landing, int round) {
+        return from < landing && round % 2 == 0;
+    }
+
+    // A tile our own dragons land on when they cross a portal.
+    bool exit_mouth(int cell) const {
+        return !mouths_.empty() && mouths_[static_cast<std::size_t>(cell)] != 0;
     }
 
   private:
@@ -143,6 +159,17 @@ class Map {
     std::vector<int> candidates_;       // baked maps still consistent with our view
     mapdb::Known const* known_ = nullptr;
     std::vector<int> known_exits_;      // exit_key -> landing tile, from the baked map
+    std::vector<char> mouths_;          // tiles our crossings land on
+
+    void mark_mouth(int from, int landing) {
+        if (from >= landing) {
+            return;
+        }
+        if (mouths_.empty()) {
+            mouths_.assign(static_cast<std::size_t>(size()), 0);
+        }
+        mouths_[static_cast<std::size_t>(landing)] = 1;
+    }
 
     int exit_key(int x, int y, int dir) const { return index(x, y) * 4 + dir; }
 
@@ -249,6 +276,7 @@ class Map {
         lx = logic::wrap_coord(lx, width_);
         ly = logic::wrap_coord(ly, height_);
         known_exits_[static_cast<std::size_t>(exit_key(x, y, dir))] = index(lx, ly);
+        mark_mouth(index(x, y), index(lx, ly));
     }
 
     Landing through_portal(int x, int y, int dir, int portal_id) const {
