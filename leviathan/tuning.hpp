@@ -8,6 +8,13 @@ namespace tuning {
 static constexpr int GAMMA = 80;
 // Chance, in percent, that a tile we have never seen holds a pearl.
 static constexpr int FOG_PRIOR = 4;
+// On a baked map: chance, in percent, that a pearl on a tile we cannot see
+// is grazed away each round. Sets how full a tile stays between visits.
+static constexpr int GRAZE = 5;
+// How the baked pearl gaps price tiles: 0 not at all (edges only), 1 only
+// rules out tiles that never spawn, 2 also prices every tile by its gap.
+// Level 2 lost 32-22 to level 0's 39-15 in local games, so it stays off.
+static constexpr int KNOWN_VALUE = 0;
 // A dragon splits off a farmer once it is at least this long ...
 static constexpr int SPLIT_LEN = 4;
 // ... and only up to this round.
@@ -25,6 +32,10 @@ static constexpr int TILES_PER_DRAGON = 12;
 // we have never seen. Unexplored water behind portals is where the pearls
 // pile up on portal-heavy maps.
 static constexpr int EXPLORE_PORTAL = 25;
+// From this round the dragon that believes it is the king stops splitting,
+// so it enters the feeding with a head start: it eats at most one pearl a
+// round, and the tiebreak is the longest single dragon.
+static constexpr int KING_HOLD_ROUND = 300;
 // From this round the team feeds its king (0 turns feeding off) ...
 static constexpr int FEED_ROUND = 420;
 // ... keeping this many dragons (king included) out of it.

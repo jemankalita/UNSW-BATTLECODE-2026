@@ -2,6 +2,7 @@
 
 #include "helper.hpp"
 #include "logic.hpp"
+#include "mapdb.hpp"
 
 #include <cstdint>
 #include <unordered_map>
@@ -16,6 +17,10 @@ static constexpr int EDGE_OPEN = -1;
 static constexpr int EDGE_KELP = -3;
 // Stand-in portal ids for mirrored pairs start here (real ids are small).
 static constexpr int MIRROR_PORTAL = 1 << 20;
+// Stand-in id for a portal only the baked map told us about.
+static constexpr int KNOWN_PORTAL = 1 << 21;
+// Slack on a countdown read against the baked map's max gap.
+static constexpr int COUNTDOWN_SLACK = 1;
 
 struct Cell {
     int edge[4] = {EDGE_UNKNOWN, EDGE_UNKNOWN, EDGE_UNKNOWN, EDGE_UNKNOWN};
@@ -49,7 +54,28 @@ struct Landing {
 
 class Map {
   public:
-    Map(int width, int height) : width_(width), height_(height), cells_(static_cast<std::size_t>(width * height)) {}
+    Map(int width, int height) : width_(width), height_(height), cells_(static_cast<std::size_t>(width * height)) {
+        for (int i = 0; i < mapdb::MAP_COUNT; ++i) {
+            if (mapdb::MAPS[i].width == width && mapdb::MAPS[i].height == height) {
+                candidates_.push_back(i);
+            }
+        }
+    }
+
+    // The baked ranked map we are on, once what we have seen rules out
+    // every other one of this size; null on any other map.
+    mapdb::Known const* known() const { return known_; }
+
+    // The pearl gap of a tile on the baked map. False when the map is unknown.
+    bool gap(int cell, int& lo, int& hi) const {
+        if (known_ == nullptr) {
+            return false;
+        }
+        mapdb::Gap const& g = known_->gaps[known_->tiles[cell] - 'a'];
+        lo = g.lo;
+        hi = g.hi;
+        return true;
+    }
 
     int width() const { return width_; }
     int height() const { return height_; }
@@ -63,6 +89,7 @@ class Map {
         for (unswbc::Tile const& tile : ct.get_tiles()) {
             observe_tile(tile, round);
         }
+        settle_known();
         if (symmetry_ >= 0 || broken_) {
             mirror_view(ct);
             return;
@@ -82,6 +109,9 @@ class Map {
     Landing step(int x, int y, int dir, bool optimistic) const {
         Landing out;
         int edge = at(x, y).edge[dir];
+        if (edge == EDGE_UNKNOWN && known_ != nullptr) {
+            edge = known_edge(x, y, dir);
+        }
         if (edge == EDGE_KELP || (edge == EDGE_UNKNOWN && !optimistic)) {
             return out;
         }
@@ -110,15 +140,127 @@ class Map {
     bool broken_ = false;  // nothing fits: stop inferring rather than guess
     std::unordered_map<int, std::vector<logic::PortalSide>> portals_;
     std::unordered_map<int, int> exits_;
+    std::vector<int> candidates_;       // baked maps still consistent with our view
+    mapdb::Known const* known_ = nullptr;
+    std::vector<int> known_exits_;      // exit_key -> landing tile, from the baked map
 
     int exit_key(int x, int y, int dir) const { return index(x, y) * 4 + dir; }
+
+    // ---- the baked map --------------------------------------------------------
+    // Edge rows alternate: row 2y holds the north sides of tile row y, row
+    // 2y+1 the west sides, each width + 1 long. The board wraps, so the
+    // bottom row's south sides are the top row's north sides (the file's
+    // last row and column are unused padding), and likewise east and west.
+
+    int edge_index(int x, int y, int dir) const {
+        if (dir == logic::DIR_S) {
+            return edge_index(x, logic::wrap_coord(y + 1, height_), logic::DIR_N);
+        }
+        if (dir == logic::DIR_E) {
+            return edge_index(logic::wrap_coord(x + 1, width_), y, logic::DIR_W);
+        }
+        int row = dir == logic::DIR_N ? 2 * y : 2 * y + 1;
+        return row * (width_ + 1) + x;
+    }
+
+    static int edge_value(char kind) {
+        return kind == '#' ? EDGE_KELP : kind == 'P' ? KNOWN_PORTAL : EDGE_OPEN;
+    }
+
+    int known_edge(int x, int y, int dir) const {
+        return edge_value(known_->edges[edge_index(x, y, dir)]);
+    }
+
+    static bool edge_agrees(int seen, int baked) {
+        return (seen >= 0 && baked >= 0) || seen == baked;
+    }
+
+    // Rule out every baked map that disagrees with a tile we can see.
+    void check_candidates(unswbc::Tile const& tile, int x, int y) {
+        if (candidates_.empty()) {
+            return;
+        }
+        int countdown = tile.get_pearl_time();
+        std::vector<int> keep;
+        for (int id : candidates_) {
+            mapdb::Known const& m = mapdb::MAPS[id];
+            mapdb::Gap const& g = m.gaps[m.tiles[index(x, y)] - 'a'];
+            bool ok = (countdown < 0) == (g.hi <= 0) && countdown <= g.hi + COUNTDOWN_SLACK;
+            for (int dir = 0; dir < 4 && ok; ++dir) {
+                ok = edge_agrees(at(x, y).edge[dir], edge_value(m.edges[edge_index(x, y, dir)]));
+            }
+            if (ok) {
+                keep.push_back(id);
+            }
+        }
+        candidates_.swap(keep);
+        if (candidates_.empty()) {
+            known_ = nullptr;
+            known_exits_.clear();
+        }
+    }
+
+    // Once a single baked map is left, learn where each of its portals leads
+    // and take its symmetry.
+    void settle_known() {
+        if (known_ != nullptr || candidates_.size() != 1) {
+            return;
+        }
+        known_ = &mapdb::MAPS[candidates_.front()];
+        known_exits_.assign(static_cast<std::size_t>(size() * 4), -1);
+        for (int p = 0; p < known_->portal_count; ++p) {
+            int a = known_->portals[2 * p];
+            int b = known_->portals[2 * p + 1];
+            link_portal(a, b);
+            link_portal(b, a);
+        }
+        if (symmetry_ < 0 && !broken_ && known_->symmetry >= 0 && possible_[known_->symmetry]) {
+            for (int kind = 0; kind < logic::SYM_KINDS; ++kind) {
+                possible_[kind] = kind == known_->symmetry;
+            }
+            settle_symmetry();
+        }
+    }
+
+    // Record, for both tiles beside edge 'from', where crossing it lands:
+    // the tile on the same side of edge 'to' that the step points at.
+    void link_portal(int from, int to) {
+        int stride = width_ + 1;
+        int fr = from / stride;
+        int fc = from % stride;
+        int tr = to / stride;
+        int tc = to % stride;
+        if (fr % 2 == 0) {
+            int y = fr / 2;
+            int ty = tr / 2;
+            add_exit(fc, y - 1, logic::DIR_S, tc, ty);
+            add_exit(fc, y, logic::DIR_N, tc, ty - 1);
+        } else {
+            int y = (fr - 1) / 2;
+            int ty = (tr - 1) / 2;
+            add_exit(fc - 1, y, logic::DIR_E, tc, ty);
+            add_exit(fc, y, logic::DIR_W, tc - 1, ty);
+        }
+    }
+
+    void add_exit(int x, int y, int dir, int lx, int ly) {
+        x = logic::wrap_coord(x, width_);
+        y = logic::wrap_coord(y, height_);
+        lx = logic::wrap_coord(lx, width_);
+        ly = logic::wrap_coord(ly, height_);
+        known_exits_[static_cast<std::size_t>(exit_key(x, y, dir))] = index(lx, ly);
+    }
 
     Landing through_portal(int x, int y, int dir, int portal_id) const {
         Landing out;
         auto learned = exits_.find(exit_key(x, y, dir));
-        if (learned != exits_.end()) {
-            out.x = learned->second % width_;
-            out.y = learned->second / width_;
+        int landing = learned != exits_.end() ? learned->second : -1;
+        if (landing < 0 && !known_exits_.empty()) {
+            landing = known_exits_[static_cast<std::size_t>(exit_key(x, y, dir))];
+        }
+        if (landing >= 0) {
+            out.x = landing % width_;
+            out.y = landing / width_;
             out.ok = true;
             out.portal = true;
             return out;
@@ -191,6 +333,7 @@ class Map {
                 remember_portal(value, next.x, next.y, logic::opposite_dir(dir));
             }
         }
+        check_candidates(tile, pos.x, pos.y);
     }
 
     // ---- symmetry -----------------------------------------------------------

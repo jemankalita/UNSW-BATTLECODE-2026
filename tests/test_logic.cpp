@@ -1,11 +1,25 @@
 #include "../leviathan/logic.hpp"
+#include "../leviathan/mapdb.hpp"
 
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 
 namespace {
 
 int g_failed = 0;
+
+// Edge rows alternate north sides (row 2y) and west sides (row 2y+1); the
+// board wraps, so south and east sides are the next tile's north and west.
+int baked_edge(int x, int y, int dir, int w, int h) {
+    if (dir == logic::DIR_S) {
+        return baked_edge(x, logic::wrap_coord(y + 1, h), logic::DIR_N, w, h);
+    }
+    if (dir == logic::DIR_E) {
+        return baked_edge(logic::wrap_coord(x + 1, w), y, logic::DIR_W, w, h);
+    }
+    return (dir == logic::DIR_N ? 2 * y : 2 * y + 1) * (w + 1) + x;
+}
 
 void expect(bool condition, char const* name) {
     if (condition) {
@@ -144,6 +158,52 @@ void test_symmetry() {
     expect(logic::manhattan(0, 0, 9, 7, 10, 8) == 2, "torus manhattan wraps both ways");
 }
 
+void test_gap_chance() {
+    expect(logic::gap_chance(0, 0, 400, 80) == 0, "never-spawning tile");
+    expect(logic::gap_chance(20, 50, 10, 80) == 0, "too soon after the draw");
+    expect(logic::gap_chance(1, 50, 50, 80) == 80, "fast tile full after its widest gap");
+    expect(logic::gap_chance(1, 50, 25, 80) == 40, "half way through the gap");
+    expect(logic::gap_chance(1, 1000, 2, 80) == 1, "slow tile never rounds to zero");
+    expect(logic::steady_chance(0, 0, 5) == 0, "dead tile stays bare");
+    expect(logic::steady_chance(1, 50, 5) == 43, "fast tile mostly full");
+    expect(logic::steady_chance(1, 1000, 5) == 3, "slow tile mostly bare");
+}
+
+// Every baked map is internally consistent, and its kelp is symmetric the
+// way the bot will assume: this pins the map file's axis naming.
+void test_mapdb() {
+    for (int i = 0; i < mapdb::MAP_COUNT; ++i) {
+        mapdb::Known const& m = mapdb::MAPS[i];
+        int w = m.width;
+        int h = m.height;
+        expect(static_cast<int>(std::strlen(m.tiles)) == w * h, m.name);
+        expect(static_cast<int>(std::strlen(m.edges)) == (2 * h + 1) * (w + 1), m.name);
+        for (int p = 0; p < 2 * m.portal_count; ++p) {
+            expect(m.edges[m.portals[p]] == 'P', "portal ends are portal edges");
+        }
+        for (int t = 0; t < w * h; ++t) {
+            expect(m.tiles[t] - 'a' < m.gap_count, "tile gap in range");
+        }
+        if (m.symmetry < 0) {
+            continue;
+        }
+        bool mirrored = true;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                logic::Point q = logic::mirror_tile(m.symmetry, x, y, w, h);
+                for (int dir = 0; dir < 4; ++dir) {
+                    int mdir = logic::mirror_dir(m.symmetry, dir);
+                    char a = m.edges[baked_edge(x, y, dir, w, h)];
+                    char b = m.edges[baked_edge(q.x, q.y, mdir, w, h)];
+                    mirrored = mirrored && a == b;
+                }
+                mirrored = mirrored && m.tiles[y * w + x] == m.tiles[q.y * w + q.x];
+            }
+        }
+        expect(mirrored, m.name);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -157,6 +217,8 @@ int main() {
     test_team();
     test_feeding();
     test_symmetry();
+    test_gap_chance();
+    test_mapdb();
     if (g_failed != 0) {
         std::printf("%d failed\n", g_failed);
         return 1;

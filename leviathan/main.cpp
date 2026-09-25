@@ -23,6 +23,9 @@ constexpr long long PORTAL_RISK = PEARL / 2;
 constexpr int PORTAL_FRESH = 4;
 constexpr long long UNSAFE = 1000000000000LL;
 constexpr int VALUE_DEPTH = 60;
+// A sprint is an escape: it only has to tell a pocket from open water, and
+// a dozen full-map searches would blow the turn's CPU budget on big maps.
+constexpr int SPRINT_VALUE_DEPTH = 16;
 constexpr int KAMIKAZE_LEN = 5;
 constexpr int SURVIVE_DEPTH = 40;
 constexpr int SURVIVE_BUDGET = 4000;
@@ -115,6 +118,9 @@ class Brain {
             }
             if (ram2 != nullptr) {
                 commit(ct, *ram2, "last ram");
+                return;
+            }
+            if (cornered_split(ct, plans)) {
                 return;
             }
         }
@@ -432,6 +438,11 @@ class Brain {
             if (std::find(plan.cells.begin(), plan.cells.end(), cell) != plan.cells.end()) {
                 continue;
             }
+            // Out of view is not out of the way: a portal can lead straight
+            // back onto our own body, tail included.
+            if (std::find(body_.begin(), body_.end(), cell) != body_.end()) {
+                continue;
+            }
             int who = occ_[static_cast<std::size_t>(cell)];
             bool ram = who >= 0 && occ_enemy_[static_cast<std::size_t>(cell)] && is_enemy_head(cell);
             if (who >= 0 && !(ram && steps_left == 1)) {
@@ -441,8 +452,7 @@ class Brain {
             next.dirs.push_back(dir);
             next.cells.push_back(cell);
             next.portal = next.portal || land.portal;
-            if (land.portal && map_.cell(cell).seen_round != round_ &&
-                round_ - map_.cell(cell).occupied_round <= PORTAL_FRESH) {
+            if (land.portal && blind_landing(cell)) {
                 next.portal_blind = true;
             }
             if (ram) {
@@ -456,6 +466,28 @@ class Brain {
                 extend(next, cell, steps_left - 1, out);
             }
         }
+    }
+
+    // We cannot see through a portal. If a dragon stood on the far tile or
+    // right beside it lately, it may still be there, or step onto us.
+    bool blind_landing(int cell) const {
+        if (map_.cell(cell).seen_round == round_) {
+            return false;
+        }
+        if (round_ - map_.cell(cell).occupied_round <= PORTAL_FRESH) {
+            return true;
+        }
+        for (int dir = 0; dir < 4; ++dir) {
+            world::Landing near = map_.step(cx(cell), cy(cell), dir, true);
+            if (!near.ok || near.portal) {
+                continue;
+            }
+            world::Cell const& c = map_.cell(map_.index(near.x, near.y));
+            if (c.seen_round != round_ && round_ - c.occupied_round <= PORTAL_FRESH) {
+                return true;
+            }
+        }
+        return false;
     }
 
     bool is_enemy_head(int cell) const {
@@ -515,7 +547,8 @@ class Brain {
         // lately may still hold one, so that crossing is a last resort.
         plan.safe = plan.room >= need + pearls && lives && !plan.portal_blind;
         int end = plan.cells.back();
-        long long score = value_from(body, plan.length) - static_cast<long long>(steps - 1) * PEARL;
+        long long score = value_from(body, plan.length, steps > 1 ? SPRINT_VALUE_DEPTH : VALUE_DEPTH) -
+                          static_cast<long long>(steps - 1) * PEARL;
         for (std::size_t i = 0; i + 1 < plan.cells.size(); ++i) {
             if (pearl_now(plan.cells[i])) {
                 score += PEARL;
@@ -723,14 +756,14 @@ class Brain {
 
     // Distance-discounted pull of every pearl we expect to find, walking out
     // from where the plan leaves our head.
-    long long value_from(std::vector<int> const& body, int length) {
+    long long value_from(std::vector<int> const& body, int length, int depth) {
         std::vector<int> body_index = index_of(body);
         int stamp = next_stamp();
         int start = body.front();
         std::vector<int> frontier{start};
         mark_[static_cast<std::size_t>(start)] = stamp;
         long long total = tile_value(start, 0);
-        for (int t = 1; t <= VALUE_DEPTH && !frontier.empty(); ++t) {
+        for (int t = 1; t <= depth && !frontier.empty(); ++t) {
             std::vector<int> next;
             for (int cell : frontier) {
                 for (int dir = 0; dir < 4; ++dir) {
@@ -760,12 +793,29 @@ class Brain {
         world::Cell const& c = map_.cell(cell);
         int arrive = round_ + t + 1;
         int chance = 0;
-        if (c.seen) {
+        int lo = 0;
+        int hi = 0;
+        bool baked = tuning::KNOWN_VALUE != 0 && map_.gap(cell, lo, hi);
+        bool dead = baked && hi <= 0;
+        baked = baked && tuning::KNOWN_VALUE >= 2;
+        if (dead) {
+            chance = 0;
+        } else if (c.seen) {
             chance = logic::pearl_chance(true, c.pearl, round_ - c.seen_round, c.spawn_round, arrive, tuning::FOG_PRIOR);
+            // Once its countdown has fired, an emptied fast tile keeps
+            // growing pearls: it is as full as its spawn rate allows.
+            bool waiting = c.spawn_round >= 0 && arrive < c.spawn_round;
+            if (baked && !c.pearl && !waiting) {
+                chance = std::max(chance, logic::steady_chance(lo, hi, tuning::GRAZE));
+            }
         } else if (c.timed) {
             // Never seen, but its mirror told us when it spawns.
             chance = logic::pearl_chance(true, false, round_ - c.timed_round, c.spawn_round, arrive, tuning::FOG_PRIOR);
-            chance = std::max(chance, tuning::FOG_PRIOR);
+            chance = std::max(chance, baked ? 1 : tuning::FOG_PRIOR);
+        } else if (baked) {
+            // Never seen: its first countdown was drawn from the same gap,
+            // and since then it has been as full as its spawn rate allows.
+            chance = std::min(logic::gap_chance(lo, hi, arrive, 100), logic::steady_chance(lo, hi, tuning::GRAZE));
         } else {
             chance = tuning::FOG_PRIOR;
         }
@@ -842,6 +892,10 @@ class Brain {
         if (!ct.can_split(tuning::CHILD_SIZE) || threat_[static_cast<std::size_t>(head_)] > 0) {
             return false;
         }
+        king::Report const& crown = king_.best();
+        if (round_ >= tuning::KING_HOLD_ROUND && crown.valid && crown.id == id_) {
+            return false;
+        }
         // Ladder replays: the teams that beat us split whenever they can and
         // shrug off the children they lose, so only the checks that keep a
         // split from being plainly suicidal stay unconditional.
@@ -857,6 +911,25 @@ class Brain {
         }
         ct.do_split(tuning::CHILD_SIZE);
         ct.set_indicator_string("split");
+        trail_.erase(trail_.begin(), trail_.end() - std::min<int>(static_cast<int>(trail_.size()), len_ - tuning::CHILD_SIZE));
+        return true;
+    }
+
+    // With no move that lives, a split still does: the head stays put this
+    // turn, the body loses its rear, and the tiles behind the neck start to
+    // open. Only when every move would kill us outright; a move that merely
+    // looks tight is still better than handing away segments.
+    bool cornered_split(unswbc::Controller& ct, std::vector<Plan> const& plans) {
+        if (!ct.can_split(tuning::CHILD_SIZE)) {
+            return false;
+        }
+        for (Plan const& plan : plans) {
+            if (plan.ram_len == 0 && plan.lasts > 1) {
+                return false;
+            }
+        }
+        ct.do_split(tuning::CHILD_SIZE);
+        ct.set_indicator_string("cornered split");
         trail_.erase(trail_.begin(), trail_.end() - std::min<int>(static_cast<int>(trail_.size()), len_ - tuning::CHILD_SIZE));
         return true;
     }
@@ -904,7 +977,8 @@ class Brain {
         } else {
             ct.make_moves(dirs);
         }
-        ct.set_indicator_string(label);
+        // A trailing '*' in replays marks a dragon that knows the baked map.
+        ct.set_indicator_string(map_.known() != nullptr ? std::string(label) + "*" : std::string(label));
         for (int cell : plan.cells) {
             trail_.push_back(cell);
         }

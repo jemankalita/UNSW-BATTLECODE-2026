@@ -17,6 +17,7 @@ leviathan/          the bot
   world.hpp           map memory: kelp, portals, pearl timing, symmetry inference
   king.hpp            which ally is the team's king, relayed by sonar
   logic.hpp           pure, unit-tested rules (geometry, sonar, combat, splitting, feeding)
+  mapdb.hpp           the ranked maps, baked in by tools/mapdb.py (generated)
   tuning.hpp          strategy knobs
   helper.hpp          the toolkit's engine reader (unchanged)
 starter/            the stock `unswbc init` bot, a reference opponent
@@ -25,6 +26,7 @@ tests/test_logic.cpp  unit tests for logic.hpp
 tools/arena.py      batch runner: every map, both sides, in parallel, in the judge sandbox
 tools/genmap.py     random symmetric maps for wider testing
 tools/stuck_dump.py draws a dragon's last few 7x7 views before it died
+tools/mapdb.py      bakes .map files into leviathan/mapdb.hpp
 ```
 
 ## Strategy
@@ -51,6 +53,15 @@ tools/stuck_dump.py draws a dragon's last few 7x7 views before it died
   rules out symmetries whose mirror images disagree with what it has seen.
   Once one symmetry is left, it fills in unseen kelp and pearl timings from
   their mirror tiles.
+- **Know the ranked maps.** The ladder plays nine fixed maps, and the API
+  serves their text. `tools/mapdb.py` bakes their kelp, portals and pearl
+  gaps into the bot. A dragon keeps every baked map of its board's size that
+  agrees with each tile it sees (edges, and whether the tile spawns at all),
+  and once one is left it knows every kelp edge and where every portal
+  leads, including edges it has never seen. Any disagreement drops the
+  baked map, so custom maps fall back to plain inference. The board is a
+  torus: the file's last edge row and column are padding, and the bottom
+  row's south sides are the top row's north sides.
 - **Farm by expected value.** A BFS from each candidate move sums the
   distance-discounted chance of a pearl on every reachable tile. That uses
   remembered pearls, countdowns that will have run out by the time we arrive,
@@ -59,6 +70,9 @@ tools/stuck_dump.py draws a dragon's last few 7x7 views before it died
 - **Trade up.** A short dragon rams a clearly longer enemy head (both die),
   and a cornered dragon takes an enemy head with it. Longer dragons price the
   risk of ending a move where an enemy head could reach them.
+- **Hold the king.** From round 300 the dragon that believes it is the
+  longest stops splitting. It can eat at most a pearl a round, so it needs
+  that head start before the feeding begins.
 - **Feed the king.** Every dragon relays, by sonar each turn, the longest ally
   it knows of. From round 420 the rest of the team, except the last few
   dragons, walk to that king and die beside it. A dead dragon turns every
@@ -89,10 +103,16 @@ generated.
 
 | matchup | result |
 |---|---|
+| v6 vs v5 / v4 / v3 (9 ranked maps, both sides) | 7-11 / 13-5 / 18-0 (v5's own record: 9-9 / 12-6 / 18-0) |
 | v5 (portal exploration, eager splits) vs v4 (33 maps) | 47 W / 19 L |
 | v4 vs `main`'s v3 (35 maps) | 70 W / 0 L |
 | v4 vs stock starter (35 maps) | 70 W / 0 L |
 | king feeding vs none (35 maps) | 45 W / 25 L |
+
+Games are deterministic, so one map played twice is two games, and a small
+change reshuffles outcomes; treat differences of a few games as noise.
+Pricing tiles by their baked pearl gaps (`KNOWN_VALUE` 2) lost 32-22 against
+the same three opponents, so v6 uses the baked maps for edges and portals only.
 
 Settings that tested neutral or worse and were left out: one dragon per 8
 tiles (34–32), feeding from round 400 (29–37), keeping 8 dragons out of
