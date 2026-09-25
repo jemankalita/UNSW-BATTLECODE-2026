@@ -4,6 +4,11 @@
 // few numbers changed, and tools/arena.py can play the two against each other.
 namespace tuning {
 
+// 0 plays every map blind, as on a map the bot has never seen (the sprint
+// tournament uses a new one): the test for everything that must work
+// without mapdb.hpp.
+static constexpr int USE_BAKED_MAPS = 1;
+
 // Discount per step of distance when summing the pull of pearls, in percent.
 static constexpr int GAMMA = 80;
 // Chance, in percent, that a tile we have never seen holds a pearl.
@@ -61,6 +66,8 @@ static constexpr int RICH_PULL = 5;
 static constexpr int DIVE_MAX_LEN = 6;
 // ... through at most this many one-wide tiles, ...
 static constexpr int DIVE_DEPTH = 8;
+// ... and pockets of any shape up to this many tiles.
+static constexpr int POCKET_MAX = 12;
 // ... pricing each child it splits out at this many pearls.
 static constexpr int DIVE_CHILD = 2;
 // From this round the dragon that believes it is the king stops splitting,
