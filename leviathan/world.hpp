@@ -162,7 +162,7 @@ class Map {
 
     bool crossing_allowed(int from, int landing, int round) const {
         if (one_way()) {
-            return order(from) < order(landing) && round % 2 == 0;
+            return forward(from, landing) && round % 2 == 0;
         }
         return round % 4 == crossing_slot(from, landing);
     }
@@ -202,6 +202,15 @@ class Map {
         return region_size_.empty() ? 0 : region_size_[static_cast<std::size_t>(cell)];
     }
 
+    // Room to live in around 'cell': its on-foot region, plus, for a small
+    // region, every other small region its portals chain to without passing
+    // through a big one. Queen of Spades' fountain rooms are single 16-tile
+    // traps; Default's nine 16-tile rooms link to each other by portal into a
+    // 194-tile network that ladder teams farm.
+    int living_room(int cell) const {
+        return network_size_.empty() ? 0 : network_size_[static_cast<std::size_t>(cell)];
+    }
+
     bool same_region(int a, int b) const {
         return !region_id_.empty() && region_id_[static_cast<std::size_t>(a)] == region_id_[static_cast<std::size_t>(b)];
     }
@@ -229,9 +238,19 @@ class Map {
     std::vector<char> region_rich_;     // whether each tile's on-foot region holds a rich tile
     std::vector<int> region_size_;      // tiles in each tile's on-foot region
     std::vector<int> region_id_;        // lowest tile index of each tile's on-foot region
+    std::vector<int> network_size_;     // see living_room()
 
     static constexpr signed char SLOT_NONE = -1;
     static constexpr signed char SLOT_MIXED = -2;
+
+    // The direction a one-way portal runs. On Trophy it runs into the
+    // central fountain, (12,22) -> (12,5): the top teams take that route
+    // and reach the fountain by round 40, and the bowl's open bottom lets
+    // dragons walk back out.
+    bool forward(int from, int landing) const {
+        bool into = known_ != nullptr && std::string(known_->name) == tuning::ONE_WAY_MAP && tuning::ONE_WAY_INTO_CENTRE;
+        return into ? order(from) > order(landing) : order(from) < order(landing);
+    }
 
     // Team B compares tiles by their mirror images under the map's symmetry.
     int order(int cell) const {
@@ -244,7 +263,7 @@ class Map {
     }
 
     void mark_slot(int from, int landing) {
-        if (order(from) < order(landing)) {
+        if (forward(from, landing)) {
             if (exit_mouths_.empty()) {
                 exit_mouths_.assign(static_cast<std::size_t>(size()), 0);
             }
@@ -356,7 +375,7 @@ class Map {
             // A rich tile in a pocket too small to live in (Queen of Spades'
             // 16-tile fountain rooms, entered only by portal) is a trap, not
             // a destination: pulling toward them lost QoS 0/16 vs 7/16.
-            if (is_rich(i) && region_size_[static_cast<std::size_t>(i)] >= RICH_REGION_MIN) {
+            if (is_rich(i) && network_size_[static_cast<std::size_t>(i)] >= RICH_REGION_MIN) {
                 rich_dist_[static_cast<std::size_t>(i)] = 0;
                 queue.push_back(i);
             }
@@ -424,6 +443,55 @@ class Map {
                 region_rich_[static_cast<std::size_t>(cell)] = rich ? 1 : 0;
                 region_size_[static_cast<std::size_t>(cell)] = static_cast<int>(members.size());
                 region_id_[static_cast<std::size_t>(cell)] = start;
+            }
+        }
+        link_networks();
+    }
+
+    // Union small regions joined by portals; big regions are not crossed.
+    void link_networks() {
+        network_size_ = region_size_;
+        std::unordered_map<int, std::vector<int>> links;
+        for (int key = 0; key < static_cast<int>(known_exits_.size()); ++key) {
+            int landing = known_exits_[static_cast<std::size_t>(key)];
+            if (landing < 0) {
+                continue;
+            }
+            int from = key / 4;
+            int a = region_id_[static_cast<std::size_t>(from)];
+            int b = region_id_[static_cast<std::size_t>(landing)];
+            if (a != b && region_size_[static_cast<std::size_t>(from)] < RICH_REGION_MIN &&
+                region_size_[static_cast<std::size_t>(landing)] < RICH_REGION_MIN) {
+                links[a].push_back(b);
+                links[b].push_back(a);
+            }
+        }
+        std::unordered_map<int, int> total;
+        for (int i = 0; i < size(); ++i) {
+            int r = region_id_[static_cast<std::size_t>(i)];
+            if (region_size_[static_cast<std::size_t>(i)] >= RICH_REGION_MIN || total.count(r) != 0) {
+                continue;
+            }
+            std::vector<int> group{r};
+            std::unordered_map<int, bool> seen{{r, true}};
+            int sum = 0;
+            for (std::size_t q = 0; q < group.size(); ++q) {
+                sum += region_size_[static_cast<std::size_t>(group[q])];
+                for (int n : links[group[q]]) {
+                    if (!seen[n]) {
+                        seen[n] = true;
+                        group.push_back(n);
+                    }
+                }
+            }
+            for (int g : group) {
+                total[g] = sum;
+            }
+        }
+        for (int i = 0; i < size(); ++i) {
+            auto it = total.find(region_id_[static_cast<std::size_t>(i)]);
+            if (it != total.end()) {
+                network_size_[static_cast<std::size_t>(i)] = it->second;
             }
         }
     }
