@@ -74,10 +74,21 @@ static constexpr int HOLD_THREAT = 35;
 // On a map we do not know, a tile is rich once no countdown read there
 // exceeded this; the field is rebuilt every few rounds.
 static constexpr int FAST_SEEN = 20;
+// Short countdown reads, on different rounds, before a tile counts as fast
+// on a map we do not know; 1 lets holding work there too.
+static constexpr int BLIND_SHORT_READS = 2;
+static constexpr int BLIND_HOLD = 0;
+// Ram risk counts this percent on a move that eats a pearl now.
+static constexpr int EAT_THREAT = 100;
+// Nodes for the exact survival look-ahead (turns use 20-30M of 100M points).
+static constexpr int SURVIVE_NODES = 4000;
 static constexpr int RICH_FIELD_EVERY = 4;
 // With no safe move, a single step that the look-ahead keeps alive this
 // many moves beats paying a segment for a two-step escape.
-static constexpr int SQUEEZE_LASTS = 2;
+static constexpr int SQUEEZE_LASTS = 8;
+// ... on maps we do not know (8 there went 17-19 against 2's results; on
+// baked maps 2 cost Stronghold 2/8 against 8's 6/8).
+static constexpr int SQUEEZE_LASTS_BLIND = 2;
 // Nook diving: only dragons at most this long dive (a long dragon is worth
 // more alive), ...
 static constexpr int DIVE_MAX_LEN = 6;

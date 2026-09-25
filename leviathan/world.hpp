@@ -39,6 +39,11 @@ struct Cell {
     int spawn_round = -1;
     // Largest countdown ever read here: a cheap estimate of the tile's max gap.
     int max_countdown = 0;
+    // Rounds on which we read a short countdown here, and the last one:
+    // two short reads on different rounds mark a fast tile on a map we do
+    // not know.
+    int short_reads = 0;
+    int short_round = -1;
     // Last round a dragon segment stood here, as far as we saw.
     int occupied_round = -1000;
 };
@@ -193,6 +198,13 @@ class Map {
         return rich_dist_.empty() ? -1 : rich_dist_[static_cast<std::size_t>(cell)];
     }
 
+    // Steps to the nearest jackpot (a tile refilling within a few rounds);
+    // -1 when unknown. Holding ground pays only around these: around
+    // Schooltime's 80 moderately fast tiles it cost 4/8 -> 0/8.
+    int jackpot_dist(int cell) const {
+        return jackpot_dist_.empty() ? -1 : jackpot_dist_[static_cast<std::size_t>(cell)];
+    }
+
     // True when the tiles reachable from 'cell' on foot, without portals,
     // hold no rich tile: Stronghold's and Trauma's spawns and the part of
     // Queen of Spades outside its fountain room. Only there does it pay to
@@ -235,6 +247,7 @@ class Map {
     std::vector<char> exit_mouths_;     // one-way mode: tiles our crossings land on
     bool team_b_ = false;
     std::vector<int> rich_dist_;        // steps to the nearest rich tile, baked maps only
+    std::vector<int> jackpot_dist_;     // steps to the nearest jackpot tile, baked maps only
     std::vector<char> region_rich_;     // whether each tile's on-foot region holds a rich tile
     std::vector<int> region_size_;      // tiles in each tile's on-foot region
     std::vector<int> region_id_;        // lowest tile index of each tile's on-foot region
@@ -348,6 +361,10 @@ class Map {
             link_portal(b, a);
         }
         compute_rich_dist();
+        jackpot_dist_ = distance_field([this](int i) {
+            mapdb::Gap const& g = known_->gaps[known_->tiles[i] - 'a'];
+            return g.hi > 0 && g.hi <= JACKPOT_GAP && network_size_[static_cast<std::size_t>(i)] >= RICH_REGION_MIN;
+        });
         if (symmetry_ < 0 && !broken_ && known_->symmetry >= 0 && possible_[known_->symmetry]) {
             for (int kind = 0; kind < logic::SYM_KINDS; ++kind) {
                 possible_[kind] = kind == known_->symmetry;
@@ -404,6 +421,51 @@ class Map {
             }
         }
     }
+
+    // Breadth-first steps from every tile matching 'source', over the baked
+    // edges and portals.
+    template <class Source>
+    std::vector<int> distance_field(Source source) const {
+        std::vector<int> dist(static_cast<std::size_t>(size()), -1);
+        std::vector<std::vector<int>> into(static_cast<std::size_t>(size()));
+        for (int key = 0; key < static_cast<int>(known_exits_.size()); ++key) {
+            int landing = known_exits_[static_cast<std::size_t>(key)];
+            if (landing >= 0) {
+                into[static_cast<std::size_t>(landing)].push_back(key / 4);
+            }
+        }
+        std::vector<int> queue;
+        for (int i = 0; i < size(); ++i) {
+            if (source(i)) {
+                dist[static_cast<std::size_t>(i)] = 0;
+                queue.push_back(i);
+            }
+        }
+        for (std::size_t q = 0; q < queue.size(); ++q) {
+            int cell = queue[q];
+            int next = dist[static_cast<std::size_t>(cell)] + 1;
+            for (int dir = 0; dir < 4; ++dir) {
+                if (known_edge(cell % width_, cell / width_, dir) != EDGE_OPEN) {
+                    continue;
+                }
+                logic::Point p = logic::step_wrap(cell % width_, cell / width_, dir, width_, height_);
+                int from = index(p.x, p.y);
+                if (dist[static_cast<std::size_t>(from)] < 0) {
+                    dist[static_cast<std::size_t>(from)] = next;
+                    queue.push_back(from);
+                }
+            }
+            for (int from : into[static_cast<std::size_t>(cell)]) {
+                if (dist[static_cast<std::size_t>(from)] < 0) {
+                    dist[static_cast<std::size_t>(from)] = next;
+                    queue.push_back(from);
+                }
+            }
+        }
+        return dist;
+    }
+
+    static constexpr int JACKPOT_GAP = 10;
 
     bool is_rich(int cell) const {
         mapdb::Gap const& g = known_->gaps[known_->tiles[cell] - 'a'];
@@ -591,6 +653,10 @@ class Map {
         c.pearl = tile.has_pearl();
         int countdown = tile.get_pearl_time();
         c.spawn_round = countdown < 0 ? -1 : round + countdown;
+        if (countdown >= 0 && countdown <= tuning::FAST_SEEN && round != c.short_round) {
+            c.short_reads += 1;
+            c.short_round = round;
+        }
         if (countdown > c.max_countdown) {
             c.max_countdown = countdown;
         }

@@ -30,7 +30,7 @@ constexpr int VALUE_DEPTH = 60;
 constexpr int SPRINT_VALUE_DEPTH = 16;
 constexpr int KAMIKAZE_LEN = 5;
 constexpr int SURVIVE_DEPTH = 40;
-constexpr int SURVIVE_BUDGET = 4000;
+constexpr int SURVIVE_BUDGET = tuning::SURVIVE_NODES;
 constexpr int HEAD_REACH = 2;
 constexpr int FEED_RANGE = 3;
 constexpr long long CROWD = PEARL / 8;
@@ -114,7 +114,8 @@ class Brain {
         // the whole gap between their growth and our decline. A single step
         // that keeps us alive a couple of moves is worth more than a segment.
         Plan const* squeeze = best_of(plans, false);
-        bool squeeze_lives = squeeze != nullptr && squeeze->lasts >= tuning::SQUEEZE_LASTS;
+        int squeeze_need = map_.known() != nullptr ? tuning::SQUEEZE_LASTS : tuning::SQUEEZE_LASTS_BLIND;
+        bool squeeze_lives = squeeze != nullptr && squeeze->lasts >= squeeze_need;
         if (!any_safe && squeeze_lives && best_ram(plans, true) == nullptr) {
             commit(ct, *squeeze, "squeeze");
             return;
@@ -617,8 +618,13 @@ class Brain {
             }
         }
         bool hold = holding();
-        score -= static_cast<long long>(threat_[static_cast<std::size_t>(end)]) * THREAT_SCALE *
-                 (hold ? tuning::HOLD_THREAT : 100) / 100;
+        int threat_share = hold ? tuning::HOLD_THREAT : 100;
+        if (plan.eaten > 0) {
+            // A pearl in the mouth, often from a fresh corpse, is worth some
+            // risk: the teams above us collect 2-5x our corpse pearls.
+            threat_share = threat_share * tuning::EAT_THREAT / 100;
+        }
+        score -= static_cast<long long>(threat_[static_cast<std::size_t>(end)]) * THREAT_SCALE * threat_share / 100;
         score += static_cast<long long>(std::min(plan.room, need * 2 + 8)) * ROOM_STEP;
         if (plan.dirs.front() == facing_) {
             score += STRAIGHT;
@@ -679,7 +685,8 @@ class Brain {
         for (int i = 0; i < n_; ++i) {
             world::Cell const& c = map_.cell(i);
             bool read = c.seen || c.timed;
-            if (read && c.spawn_round >= 0 && c.max_countdown > 0 && c.max_countdown <= tuning::FAST_SEEN) {
+            if (read && c.spawn_round >= 0 && c.max_countdown <= tuning::FAST_SEEN &&
+                c.short_reads >= tuning::BLIND_SHORT_READS) {
                 rich_field_[static_cast<std::size_t>(i)] = 0;
                 queue.push_back(i);
             }
@@ -726,9 +733,13 @@ class Brain {
         // Only on a baked map: on unknown maps (random test maps, the
         // sprint's new map) holding tested worse, 15-21 against 21-15.
         if (map_.known() == nullptr) {
-            return false;
+            if (!tuning::BLIND_HOLD) {
+                return false;
+            }
+            int here = rich_distance(head_);
+            return here >= 0 && here <= tuning::HOLD_RADIUS;
         }
-        int here = rich_distance(head_);
+        int here = map_.jackpot_dist(head_);
         return here >= 0 && here <= tuning::HOLD_RADIUS;
     }
 
