@@ -76,6 +76,22 @@ tools/mapdb.py      bakes .map files into leviathan/mapdb.hpp
   straight into an ally. Portals are now one-way for our team (lower tile
   index to higher) on even rounds only, walking onto an exit mouth is
   priced as a risk, and a doomed dragon dies alone or into an enemy.
+- **Dive into nooks.** The top teams' economy on Autarky (and Trauma) is
+  every-round tiles at the end of one-wide dead ends. A short dragon walks
+  in eating, so its tail stays at the mouth, splits two-segment children off
+  that tail (they leave head first), and dies in the nook, where its dropped
+  pearls feed the next diver. Human Learning ate ~700 pearls a game this way.
+- **Portals without friendly fire, both ways.** Each crossing has a slot in
+  a four-round cycle (lower tile index to higher on rounds 0 mod 4, back on
+  2 mod 4), and standing on a mouth around the reverse slot is priced as a
+  risk. The old one-way rule walled team B's spawn in on Trauma. Trophy
+  keeps one-way: two-way lost 2/16 there against 10/16.
+- **Leave starving regions.** Stronghold's and Trauma's spawns, and QoS
+  outside its fountain room, have no rich tile on foot. There each step
+  toward the nearest rich tile (through portals) is worth half a pearl.
+- **Feed by map size.** Maps under 1,100 tiles feed at most half the swarm:
+  ladder teams eliminate a team that fed itself down. Big maps feed fully,
+  where the longest dragon decides.
 - **Hold the king.** From round 300 the dragon that believes it is the
   longest stops splitting. It can eat at most a pearl a round, so it needs
   that head start before the feeding begins.
@@ -109,6 +125,7 @@ generated.
 
 | matchup | result |
 |---|---|
+| v10 vs v5 / v8 (11 maps x 4 dragon orders x 2 sides) | 53-35 / 51-37 |
 | v7 vs v5 / v4 / v3 (9 ranked maps, both sides) | 11-7 / 13-5 / 18-0 |
 | v6 vs v5 / v4 / v3 | 7-11 / 13-5 / 18-0 (v5's own record: 9-9 / 12-6 / 18-0) |
 | v5 (portal exploration, eager splits) vs v4 (33 maps) | 47 W / 19 L |
@@ -116,7 +133,9 @@ generated.
 | v4 vs stock starter (35 maps) | 70 W / 0 L |
 | king feeding vs none (35 maps) | 45 W / 25 L |
 
-Games are deterministic, so one map played twice is two games, and a small
+Local games are deterministic; to get more than one game per map and side,
+the test set shuffles each map's DRAGON lines (turn order), which keeps the
+baked map valid. Games are deterministic, so one map played twice is two games, and a small
 change reshuffles outcomes; treat differences of a few games as noise.
 Pricing tiles by their baked pearl gaps (`KNOWN_VALUE` 2) lost 32-22 against
 the same three opponents, so v6 uses the baked maps for edges and portals only.

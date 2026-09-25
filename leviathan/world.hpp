@@ -3,8 +3,10 @@
 #include "helper.hpp"
 #include "logic.hpp"
 #include "mapdb.hpp"
+#include "tuning.hpp"
 
 #include <cstdint>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -129,22 +131,74 @@ class Map {
     // that, so a wrong guess about a portal is made at most once.
     void learn_exit(int x, int y, int dir, int ex, int ey) {
         exits_[exit_key(x, y, dir)] = index(ex, ey);
-        mark_mouth(index(x, y), index(ex, ey));
+        mark_slot(index(x, y), index(ex, ey));
     }
 
-    // Portals are one-way for our team, from the lower tile index to the
-    // higher, and only on even rounds. Two allies queued at opposite mouths
-    // would otherwise cross into each other's heads, which neither can see:
-    // on the ladder that killed more of our dragons than the enemy did.
-    // A dragon that arrives on an even round leaves on the odd one, so the
-    // exit mouth is clear by the next crossing.
-    static bool crossing_allowed(int from, int landing, int round) {
-        return from < landing && round % 2 == 0;
+    // Two allies at opposite ends of a portal crossing into each other's
+    // heads, which neither can see, killed more of our dragons on the ladder
+    // than the enemy did. Each crossing therefore has a slot in a four-round
+    // cycle: from the lower tile index to the higher on rounds 0 mod 4, back
+    // on rounds 2 mod 4. The tile a crossing starts from is the tile the
+    // reverse crossing lands on, so standing there is only risky around the
+    // reverse slot; the rest of the time it is an ordinary tile.
+    // Both directions stay open, so no spawn is ever walled in.
+    static int crossing_slot(int from, int landing) {
+        return from < landing ? 0 : 2;
     }
 
-    // A tile our own dragons land on when they cross a portal.
-    bool exit_mouth(int cell) const {
-        return !mouths_.empty() && mouths_[static_cast<std::size_t>(cell)] != 0;
+    // Our team, so team B can order tiles by their mirror images: the maps
+    // are symmetric, and a raw index rule would give the two spawns
+    // different portal networks (on Trauma it walled team B's spawn in).
+    void set_team_b(bool team_b) { team_b_ = team_b; }
+
+    // Trophy's portal is the back door into its central fountain: two-way
+    // slots lost 0/16 there against one-way's 10/16 over 176-game tests.
+    bool one_way() const {
+        if (known_ != nullptr && std::string(known_->name) == tuning::ONE_WAY_MAP) {
+            return true;
+        }
+        return tuning::PORTAL_ONE_WAY != 0;
+    }
+
+    bool crossing_allowed(int from, int landing, int round) const {
+        if (one_way()) {
+            return order(from) < order(landing) && round % 2 == 0;
+        }
+        return round % 4 == crossing_slot(from, landing);
+    }
+
+    // True when walking onto 'cell' this round risks an ally popping out of
+    // a portal onto our head.
+    bool mouth_risk(int cell, int round) const {
+        if (one_way()) {
+            return !exit_mouths_.empty() && exit_mouths_[static_cast<std::size_t>(cell)] != 0;
+        }
+        if (slots_.empty()) {
+            return false;
+        }
+        int slot = slots_[static_cast<std::size_t>(cell)];
+        if (slot == SLOT_NONE) {
+            return false;
+        }
+        // Allies land here only on the reverse crossing's slot, slot + 2. A
+        // head that ends its turn here on round r sits here until its turn
+        // in round r + 1, so rounds slot + 1 and slot + 2 are the risky ones.
+        int phase = ((round - slot) % 4 + 4) % 4;
+        return slot == SLOT_MIXED || phase == 1 || phase == 2;
+    }
+
+    // Steps from 'cell' to the nearest rich tile on the baked map, walking
+    // and crossing portals; -1 when unknown or unreachable.
+    int rich_dist(int cell) const {
+        return rich_dist_.empty() ? -1 : rich_dist_[static_cast<std::size_t>(cell)];
+    }
+
+    // True when the tiles reachable from 'cell' on foot, without portals,
+    // hold no rich tile: Stronghold's and Trauma's spawns and the part of
+    // Queen of Spades outside its fountain room. Only there does it pay to
+    // head for food far away; elsewhere it pulls dragons into a crowd.
+    bool starving_region(int cell) const {
+        return !region_rich_.empty() && region_rich_[static_cast<std::size_t>(cell)] == 0;
     }
 
   private:
@@ -159,16 +213,38 @@ class Map {
     std::vector<int> candidates_;       // baked maps still consistent with our view
     mapdb::Known const* known_ = nullptr;
     std::vector<int> known_exits_;      // exit_key -> landing tile, from the baked map
-    std::vector<char> mouths_;          // tiles our crossings land on
+    std::vector<signed char> slots_;    // crossing slot of each tile a crossing starts from
+    std::vector<char> exit_mouths_;     // one-way mode: tiles our crossings land on
+    bool team_b_ = false;
+    std::vector<int> rich_dist_;        // steps to the nearest rich tile, baked maps only
+    std::vector<char> region_rich_;     // whether each tile's on-foot region holds a rich tile
 
-    void mark_mouth(int from, int landing) {
-        if (from >= landing) {
-            return;
+    static constexpr signed char SLOT_NONE = -1;
+    static constexpr signed char SLOT_MIXED = -2;
+
+    // Team B compares tiles by their mirror images under the map's symmetry.
+    int order(int cell) const {
+        int sym = known_ != nullptr ? known_->symmetry : symmetry_;
+        if (!team_b_ || sym < 0) {
+            return cell;
         }
-        if (mouths_.empty()) {
-            mouths_.assign(static_cast<std::size_t>(size()), 0);
+        logic::Point m = logic::mirror_tile(sym, cell % width_, cell / width_, width_, height_);
+        return index(m.x, m.y);
+    }
+
+    void mark_slot(int from, int landing) {
+        if (order(from) < order(landing)) {
+            if (exit_mouths_.empty()) {
+                exit_mouths_.assign(static_cast<std::size_t>(size()), 0);
+            }
+            exit_mouths_[static_cast<std::size_t>(landing)] = 1;
         }
-        mouths_[static_cast<std::size_t>(landing)] = 1;
+        if (slots_.empty()) {
+            slots_.assign(static_cast<std::size_t>(size()), SLOT_NONE);
+        }
+        signed char slot = static_cast<signed char>(crossing_slot(from, landing));
+        signed char& cur = slots_[static_cast<std::size_t>(from)];
+        cur = cur == SLOT_NONE || cur == slot ? slot : SLOT_MIXED;
     }
 
     int exit_key(int x, int y, int dir) const { return index(x, y) * 4 + dir; }
@@ -241,6 +317,7 @@ class Map {
             link_portal(a, b);
             link_portal(b, a);
         }
+        compute_rich_dist();
         if (symmetry_ < 0 && !broken_ && known_->symmetry >= 0 && possible_[known_->symmetry]) {
             for (int kind = 0; kind < logic::SYM_KINDS; ++kind) {
                 possible_[kind] = kind == known_->symmetry;
@@ -248,6 +325,93 @@ class Map {
             settle_symmetry();
         }
     }
+
+    // Breadth-first search back from every rich tile (one that is full most
+    // of the time) over the baked map's edges and portals. On Trauma the
+    // every-round tiles sit behind portals 20 to 37 steps from the spawns,
+    // too far for the discounted pearl value to ever pull a dragon there.
+    void compute_rich_dist() {
+        rich_dist_.assign(static_cast<std::size_t>(size()), -1);
+        std::vector<std::vector<int>> into(static_cast<std::size_t>(size()));
+        for (int key = 0; key < static_cast<int>(known_exits_.size()); ++key) {
+            int landing = known_exits_[static_cast<std::size_t>(key)];
+            if (landing >= 0) {
+                into[static_cast<std::size_t>(landing)].push_back(key / 4);
+            }
+        }
+        std::vector<int> queue;
+        for (int i = 0; i < size(); ++i) {
+            if (is_rich(i)) {
+                rich_dist_[static_cast<std::size_t>(i)] = 0;
+                queue.push_back(i);
+            }
+        }
+        label_regions();
+        for (std::size_t q = 0; q < queue.size(); ++q) {
+            int cell = queue[q];
+            int next = rich_dist_[static_cast<std::size_t>(cell)] + 1;
+            int x = cell % width_;
+            int y = cell / width_;
+            for (int dir = 0; dir < 4; ++dir) {
+                if (known_edge(x, y, dir) != EDGE_OPEN) {
+                    continue;
+                }
+                logic::Point p = logic::step_wrap(x, y, dir, width_, height_);
+                int from = index(p.x, p.y);
+                if (rich_dist_[static_cast<std::size_t>(from)] < 0) {
+                    rich_dist_[static_cast<std::size_t>(from)] = next;
+                    queue.push_back(from);
+                }
+            }
+            for (int from : into[static_cast<std::size_t>(cell)]) {
+                if (rich_dist_[static_cast<std::size_t>(from)] < 0) {
+                    rich_dist_[static_cast<std::size_t>(from)] = next;
+                    queue.push_back(from);
+                }
+            }
+        }
+    }
+
+    bool is_rich(int cell) const {
+        mapdb::Gap const& g = known_->gaps[known_->tiles[cell] - 'a'];
+        return logic::steady_chance(g.lo, g.hi, RICH_GRAZE) >= RICH_MIN;
+    }
+
+    // Flood each on-foot region of the baked map and note whether it holds
+    // a rich tile.
+    void label_regions() {
+        region_rich_.assign(static_cast<std::size_t>(size()), 0);
+        std::vector<int> region(static_cast<std::size_t>(size()), -1);
+        for (int start = 0; start < size(); ++start) {
+            if (region[static_cast<std::size_t>(start)] >= 0) {
+                continue;
+            }
+            std::vector<int> members{start};
+            region[static_cast<std::size_t>(start)] = start;
+            bool rich = false;
+            for (std::size_t q = 0; q < members.size(); ++q) {
+                int cell = members[q];
+                rich = rich || is_rich(cell);
+                for (int dir = 0; dir < 4; ++dir) {
+                    if (known_edge(cell % width_, cell / width_, dir) != EDGE_OPEN) {
+                        continue;
+                    }
+                    logic::Point p = logic::step_wrap(cell % width_, cell / width_, dir, width_, height_);
+                    int to = index(p.x, p.y);
+                    if (region[static_cast<std::size_t>(to)] < 0) {
+                        region[static_cast<std::size_t>(to)] = start;
+                        members.push_back(to);
+                    }
+                }
+            }
+            for (int cell : members) {
+                region_rich_[static_cast<std::size_t>(cell)] = rich ? 1 : 0;
+            }
+        }
+    }
+
+    static constexpr int RICH_GRAZE = 5;
+    static constexpr int RICH_MIN = 30;
 
     // Record, for both tiles beside edge 'from', where crossing it lands:
     // the tile on the same side of edge 'to' that the step points at.
@@ -276,7 +440,7 @@ class Map {
         lx = logic::wrap_coord(lx, width_);
         ly = logic::wrap_coord(ly, height_);
         known_exits_[static_cast<std::size_t>(exit_key(x, y, dir))] = index(lx, ly);
-        mark_mouth(index(x, y), index(lx, ly));
+        mark_slot(index(x, y), index(lx, ly));
     }
 
     Landing through_portal(int x, int y, int dir, int portal_id) const {

@@ -43,6 +43,24 @@ static constexpr int ENEMY_CONTEST = 80;
 // we have never seen. Unexplored water behind portals is where the pearls
 // pile up on portal-heavy maps.
 static constexpr int EXPLORE_PORTAL = 25;
+// Portals against friendly fire: 1 makes each crossing one-way (team B by
+// mirrored tile order) on even rounds; 0 opens both ways in 4-round slots.
+static constexpr int PORTAL_ONE_WAY = 0;
+// ... except on this baked map, which always runs one-way.
+static constexpr char const* ONE_WAY_MAP = "Trophy";
+// More than this many steps from the nearest rich tile of a baked map, ...
+// Only in regions with no rich tile on foot (world.hpp starving_region):
+// pulling Trophy's dragons into its contested centre lost 1/8 vs 5/8.
+static constexpr int RICH_NEAR = 3;
+// ... each step closer is worth this many tenths of a pearl.
+static constexpr int RICH_PULL = 5;
+// Nook diving: only dragons at most this long dive (a long dragon is worth
+// more alive), ...
+static constexpr int DIVE_MAX_LEN = 6;
+// ... through at most this many one-wide tiles, ...
+static constexpr int DIVE_DEPTH = 8;
+// ... pricing each child it splits out at this many pearls.
+static constexpr int DIVE_CHILD = 2;
 // From this round the dragon that believes it is the king stops splitting,
 // so it enters the feeding with a head start: it eats at most one pearl a
 // round, and the tiebreak is the longest single dragon.
@@ -57,6 +75,11 @@ static constexpr int FEED_KEEP = 3;
 // Feeding all but three got v7 eliminated from 19 dragons against 9 on
 // Default Small, but a 50% cap lost 6-12 to v5 locally, where every
 // opponent feeds and games end on the longest dragon; left off for now.
-static constexpr int FEED_SHARE = 0;
+static constexpr int FEED_SHARE = 50;
+// The cap applies only on maps smaller than this. On big maps games go the
+// distance and the longest dragon decides: capped feeding lost Stronghold
+// 0/8 against 6/8 uncapped. On small maps ladder teams eliminate a team
+// that fed itself down (Default Small, Autarky replays).
+static constexpr int FEED_CAP_TILES = 1100;
 
 }  // namespace tuning

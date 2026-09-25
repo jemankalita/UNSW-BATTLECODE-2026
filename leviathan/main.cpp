@@ -56,7 +56,8 @@ struct Plan {
     bool portal = false;
     bool portal_blind = false;  // out of view, and a dragon stood there lately
     bool explore = false;       // through a portal whose far end we have never seen
-    bool mouth = false;         // walks onto a tile our portal crossings land on
+    bool mouth = false;         // walks onto a portal mouth out of its slot
+    bool dive = false;          // into a dead-end nook, to eat, split the children out and die
     int ram_len = 0;         // enemy length if the last step rams a head
     long long score = 0;
 };
@@ -184,6 +185,7 @@ class Brain {
         facing_ = dir_index(ct.get_dir());
         unswbc::Position here = ct.get_position();
         head_ = map_.index(here.x, here.y);
+        map_.set_team_b(ct.get_team() == unswbc::Team::B);
         map_.observe(ct, round_);
         if (pending_portal_) {
             map_.learn_exit(cx(portal_from_), cy(portal_from_), portal_dir_, here.x, here.y);
@@ -219,7 +221,8 @@ class Brain {
         }
         feed_target_ = -1;
         if (round_ >= tuning::FEED_ROUND && feed_floor_ < 0) {
-            feed_floor_ = logic::feed_floor(units_, tuning::FEED_KEEP, tuning::FEED_SHARE);
+            int share = w_ * h_ < tuning::FEED_CAP_TILES ? tuning::FEED_SHARE : 0;
+            feed_floor_ = logic::feed_floor(units_, tuning::FEED_KEEP, share);
         }
         if (w_ * h_ < tuning::FEED_MIN_TILES ||
             !logic::feeding_time(round_, tuning::FEED_ROUND, units_, std::max(feed_floor_, tuning::FEED_KEEP))) {
@@ -460,10 +463,10 @@ class Brain {
             next.dirs.push_back(dir);
             next.cells.push_back(cell);
             next.portal = next.portal || land.portal;
-            if (land.portal && (blind_landing(cell) || !world::Map::crossing_allowed(from, cell, round_))) {
+            if (land.portal && (blind_landing(cell) || !map_.crossing_allowed(from, cell, round_))) {
                 next.portal_blind = true;
             }
-            if (!land.portal && map_.exit_mouth(cell)) {
+            if (!land.portal && map_.mouth_risk(cell, round_)) {
                 next.mouth = true;
             }
             if (ram) {
@@ -605,11 +608,18 @@ class Brain {
             score += STRAIGHT;
         }
         score -= crowding(end);
+        score += rich_pull(end);
         if (plan.portal) {
             score -= PORTAL_RISK;
         }
         if (plan.mouth) {
             score -= MOUTH_RISK;
+        }
+        long long dive_score = 0;
+        if (!plan.safe && steps == 1 && !plan.portal && dive_worth(plan, dive_score)) {
+            plan.safe = true;
+            plan.dive = true;
+            score = dive_score;
         }
         // With no safe move, buy the most turns: other dragons move on and
         // the tail frees tiles, so a pocket that lasts can still open up.
@@ -618,6 +628,105 @@ class Brain {
                     static_cast<long long>(plan.room) * PEARL / 10 + score / 1000;
         }
         plan.score = score;
+    }
+
+    // Far from any rich tile, every step closer is worth part of a pearl, so
+    // dragons leave a starving region (Trauma's spawns are walled off from
+    // their fountains except through portals) instead of grazing it bare.
+    long long rich_pull(int end) const {
+        int here = map_.rich_dist(head_);
+        int there = map_.rich_dist(end);
+        if (here <= tuning::RICH_NEAR || there < 0 || !map_.starving_region(head_)) {
+            return 0;
+        }
+        return static_cast<long long>(here - there) * tuning::RICH_PULL * PEARL / 10;
+    }
+
+    // The top ladder teams farm fast tiles that sit at the end of one-wide
+    // dead ends (Autarky's every-round tiles): a short dragon walks in eating,
+    // so its tail stays at the mouth, splits two-segment children off that
+    // tail, which leave head first, and dies in the nook, where its dropped
+    // pearls feed the next diver. Worth it when the pearls in view will make
+    // us long enough to split at least once. Only static nooks count: every
+    // tile past the first step has exactly one way on, by the map's edges.
+    bool dive_worth(Plan const& plan, long long& score) {
+        if (round_ > tuning::SPLIT_LAST_ROUND || len_ > tuning::DIVE_MAX_LEN) {
+            return false;
+        }
+        king::Report const& crown = king_.best();
+        if (round_ >= tuning::KING_HOLD_ROUND && crown.valid && crown.id == id_) {
+            return false;
+        }
+        std::vector<int> body = body_after(plan);
+        int length = plan.length;
+        int eaten = plan.eaten;
+        int cell = plan.cells.back();
+        int prev = head_;
+        bool dead_end = false;
+        for (int step = 0; step < tuning::DIVE_DEPTH; ++step) {
+            int next = -1;
+            int exits = 0;
+            for (int dir = 0; dir < 4; ++dir) {
+                world::Landing land = map_.step(cx(cell), cy(cell), dir, true);
+                if (!land.ok || land.portal) {
+                    continue;
+                }
+                int to = map_.index(land.x, land.y);
+                if (to == prev) {
+                    continue;
+                }
+                ++exits;
+                next = to;
+            }
+            if (exits == 0) {
+                dead_end = true;
+                break;
+            }
+            if (exits > 1 || occ_[static_cast<std::size_t>(next)] >= 0 ||
+                std::find(body.begin(), body.end(), next) != body.end()) {
+                return false;
+            }
+            body.insert(body.begin(), next);
+            if (pearl_now(next)) {
+                ++eaten;
+                ++length;
+            } else {
+                body.pop_back();
+            }
+            prev = cell;
+            cell = next;
+        }
+        if (!dead_end) {
+            return false;
+        }
+        int children = std::min((length - 2) / tuning::CHILD_SIZE, limit_ - units_);
+        if (children < 1) {
+            return false;
+        }
+        // The first child's head is our tail: it needs a free tile to leave
+        // by, and no enemy waiting at the mouth to ram it.
+        int tail = body.back();
+        bool way_out = false;
+        for (int dir = 0; dir < 4; ++dir) {
+            world::Landing land = map_.step(cx(tail), cy(tail), dir, true);
+            if (!land.ok || land.portal) {
+                continue;
+            }
+            int to = map_.index(land.x, land.y);
+            if (occ_[static_cast<std::size_t>(to)] < 0 && std::find(body.begin(), body.end(), to) == body.end()) {
+                way_out = true;
+            }
+        }
+        for (Other const& other : others_) {
+            if (other.enemy && logic::manhattan(cx(tail), cy(tail), other.x, other.y, w_, h_) <= 3) {
+                return false;
+            }
+        }
+        if (!way_out) {
+            return false;
+        }
+        score = static_cast<long long>(eaten) * PEARL + static_cast<long long>(children) * tuning::DIVE_CHILD * PEARL;
+        return true;
     }
 
     // Dragons packed together wall each other in: keep our head away from
