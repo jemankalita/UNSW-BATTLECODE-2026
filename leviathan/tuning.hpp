@@ -89,6 +89,9 @@ static constexpr int SQUEEZE_LASTS = 8;
 // ... on maps we do not know (8 there went 17-19 against 2's results; on
 // baked maps 2 cost Stronghold 2/8 against 8's 6/8).
 static constexpr int SQUEEZE_LASTS_BLIND = 2;
+// Dragons at least this long never end a move where an enemy head could
+// reach them next turn unless nothing else lives.
+static constexpr int KING_GUARD_LEN = 8;
 // Nook diving: only dragons at most this long dive (a long dragon is worth
 // more alive), ...
 static constexpr int DIVE_MAX_LEN = 6;

@@ -43,11 +43,14 @@ def play(job: tuple[str, str, str, str, str]) -> dict:
 
 def play_once(job: tuple[str, str, str, str, str]) -> dict:
     """Run one game. Team A is wasm_a. Returns a summary dict."""
-    map_path, wasm_a, wasm_b, label_a, label_b = job
+    map_path, wasm_a, wasm_b, label_a, label_b, seed = job
     from unswbc.engine import EngineModule
     from unswbc.sandbox import SandboxBot, WasmPool
 
-    pools = {"A": WasmPool([wasm_a], team="a"), "B": WasmPool([wasm_b], team="b")}
+    try:  # unswbc >= 1.1 names the pool's random stream 'key'
+        pools = {"A": WasmPool([wasm_a], key="a"), "B": WasmPool([wasm_b], key="b")}
+    except TypeError:
+        pools = {"A": WasmPool([wasm_a], team="a"), "B": WasmPool([wasm_b], team="b")}
     live: dict[int, SandboxBot] = {}
     teams: dict[int, str] = {}
     lengths: dict[int, int] = {}
@@ -90,7 +93,10 @@ def play_once(job: tuple[str, str, str, str, str]) -> dict:
 
     engine = EngineModule()
     try:
-        result = engine.run(pathlib.Path(map_path).read_bytes(), reply, death, spawn, lambda _l: None, 0)
+        try:  # unswbc >= 1.1 takes a seed, so one map gives many different games
+            result = engine.run(pathlib.Path(map_path).read_bytes(), reply, death, spawn, lambda _l: None, 0, seed)
+        except TypeError:
+            result = engine.run(pathlib.Path(map_path).read_bytes(), reply, death, spawn, lambda _l: None, 0)
     finally:
         for bot in live.values():
             bot.stop()
@@ -102,7 +108,7 @@ def play_once(job: tuple[str, str, str, str, str]) -> dict:
         return (max(mine) if mine else 0, sum(mine), len(mine))
 
     return {
-        "map": pathlib.Path(map_path).stem,
+        "map": pathlib.Path(map_path).stem + (f"#{seed}" if seed else ""),
         "a": label_a,
         "b": label_b,
         "winner": result.winner,
@@ -124,6 +130,7 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=6)
     parser.add_argument("--one-side", action="store_true", help="only play with bot as team A")
     parser.add_argument("--why", action="store_true", help="tally our deaths by the dragon's last indicator")
+    parser.add_argument("--seeds", type=int, default=1, help="games per map and side, each with its own engine seed")
     args = parser.parse_args()
 
     if args.maps:
@@ -143,9 +150,10 @@ def main() -> int:
 
     jobs = []
     for map_path in maps:
-        jobs.append((map_path, wasm_bot, wasm_opp, label_bot, label_opp))
-        if not args.one_side:
-            jobs.append((map_path, wasm_opp, wasm_bot, label_opp, label_bot))
+        for seed in range(args.seeds):
+            jobs.append((map_path, wasm_bot, wasm_opp, label_bot, label_opp, seed))
+            if not args.one_side:
+                jobs.append((map_path, wasm_opp, wasm_bot, label_opp, label_bot, seed))
 
     started = time.monotonic()
     with multiprocessing.Pool(args.jobs) as pool:
