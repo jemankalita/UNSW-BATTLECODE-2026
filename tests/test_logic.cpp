@@ -105,6 +105,9 @@ void test_combat() {
     expect(!logic::worth_ram(3, 5, 2, false), "no ram for a small margin");
     expect(!logic::worth_ram(3, 20, 1, false), "last dragon never rams by choice");
     expect(logic::worth_ram(10, 2, 1, true), "cornered dragon takes a head with it");
+    expect(logic::worth_ram(3, 3, 2, false, 0), "margin 0 trades evenly");
+    expect(!logic::worth_ram(4, 3, 2, false, 0), "margin 0 never trades down");
+    expect(logic::ram_threat(3, 3, 2, 1, 0) == 0, "an even trade is no threat at margin 0");
 
     expect(logic::ram_threat(3, 9, 2, 1) == 0, "a ram by a much longer enemy is welcome");
     int near = logic::ram_threat(10, 4, 3, 1);

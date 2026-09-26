@@ -40,8 +40,10 @@ static constexpr int CHILD_ROOM = 2;
 static constexpr int SPLIT_UNDER_THREAT = 1;
 // Map tiles per dragon when sizing the team.
 static constexpr int TILES_PER_DRAGON = 4;
-// A short dragon rams an enemy head at least this much longer (both die).
-static constexpr int RAM_MARGIN = 1;
+// A dragon rams an enemy head at least this much longer (both die). 0 trades
+// evenly: the top-20 teams win by attrition, 30 head-on trades a game in the
+// first 200 rounds, most of them started by the winner.
+static constexpr int RAM_MARGIN = 0;
 // Percent of a tile's pearl we still count when an enemy head is closer.
 static constexpr int ENEMY_CONTEST = 80;
 // Worth, in tenths of a pearl, of stepping through a portal whose far end
