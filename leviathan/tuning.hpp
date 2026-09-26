@@ -144,14 +144,17 @@ static constexpr int FEED_CAP_TILES = 1100;
 // recognise (the tournament's new maps), play with the defaults above.
 struct MapProfile {
     char const* name;
+    int width;            // > 0: an unbaked map, matched by its size
+    int height;
     int ram_margin;
     int feed_round;       // replaces FEED_ROUND and FEED_ROUND_SMALL
     int king_hold_round;
 };
+// Wins for the override vs the default, summed over every local run:
 static constexpr MapProfile MAP_PROFILES[] = {
-    {"Queen Of Spades", 1, -1, -1},
-    {"Default", 1, -1, -1},
-    {"Autarky", -1, 410, -1},
+    {"Queen Of Spades", 0, 0, 1, -1, -1},     // careful rams: 31/52
+    {"Autarky", 0, 0, -1, 410, -1},           // feed earlier: 26/36
+    {"Slithery Fight", 63, 27, -1, -1, 100},  // king stops splitting at 100: 23/36
 };
 
 }  // namespace tuning
