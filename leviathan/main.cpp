@@ -181,9 +181,10 @@ class Brain {
     int feed_target_ = -1;        // king's head while we walk over to feed it
     // Knobs the map profile may override; see tuning::MAP_PROFILES.
     mapdb::Known const* profiled_ = nullptr;
+    bool profile_ready_ = false;
     int ram_margin_ = tuning::RAM_MARGIN;
     int feed_round_ = -1;         // -1: FEED_ROUND / FEED_ROUND_SMALL by map size
-    int king_hold_round_ = tuning::KING_HOLD_ROUND;
+    int king_hold_round_ = -1;    // -1: KING_HOLD_ROUND
     int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
     std::vector<int> rich_field_; // blind maps: steps to the nearest tile seen spawning fast
     int rich_field_round_ = -1000;
@@ -222,25 +223,32 @@ class Brain {
 
     // Once the baked map is recognised, switch to its profile. Unknown maps
     // (a new tournament map) keep the defaults, which are tuned for them.
+    // A pool map we do not bake (it played better blind) is matched by its
+    // size instead, while no baked map has been recognised.
     void apply_profile() {
-        if (map_.known() == profiled_) {
+        if (profile_ready_ && map_.known() == profiled_) {
             return;
         }
+        profile_ready_ = true;
         profiled_ = map_.known();
         ram_margin_ = tuning::RAM_MARGIN;
         feed_round_ = -1;
-        king_hold_round_ = tuning::KING_HOLD_ROUND;
-        if (profiled_ == nullptr) {
-            return;
-        }
+        king_hold_round_ = -1;
         for (tuning::MapProfile const& profile : tuning::MAP_PROFILES) {
-            if (std::string(profile.name) != profiled_->name) {
+            bool by_size = profile.width > 0;
+            bool match = by_size ? profiled_ == nullptr && profile.width == w_ && profile.height == h_
+                                 : profiled_ != nullptr && std::string(profile.name) == profiled_->name;
+            if (!match) {
                 continue;
             }
             ram_margin_ = profile.ram_margin >= 0 ? profile.ram_margin : ram_margin_;
             feed_round_ = profile.feed_round;
-            king_hold_round_ = profile.king_hold_round >= 0 ? profile.king_hold_round : king_hold_round_;
+            king_hold_round_ = profile.king_hold_round;
         }
+    }
+
+    int king_hold() const {
+        return king_hold_round_ >= 0 ? king_hold_round_ : tuning::KING_HOLD_ROUND;
     }
 
     void follow_king(unswbc::Controller& ct) {
@@ -826,7 +834,7 @@ class Brain {
             return false;
         }
         king::Report const& crown = king_.best();
-        if (round_ >= king_hold_round_ && crown.valid && crown.id == id_) {
+        if (round_ >= king_hold() && crown.valid && crown.id == id_) {
             return false;
         }
         int entry = plan.cells.back();
@@ -896,7 +904,7 @@ class Brain {
             return false;
         }
         king::Report const& crown = king_.best();
-        if (round_ >= king_hold_round_ && crown.valid && crown.id == id_) {
+        if (round_ >= king_hold() && crown.valid && crown.id == id_) {
             return false;
         }
         std::vector<int> body = body_after(plan);
@@ -1307,7 +1315,7 @@ class Brain {
             return false;
         }
         king::Report const& crown = king_.best();
-        if (round_ >= king_hold_round_ && crown.valid && crown.id == id_) {
+        if (round_ >= king_hold() && crown.valid && crown.id == id_) {
             return false;
         }
         // Ladder replays: the teams that beat us split whenever they can and
