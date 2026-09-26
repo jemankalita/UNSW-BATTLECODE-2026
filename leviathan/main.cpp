@@ -31,7 +31,7 @@ constexpr int SPRINT_VALUE_DEPTH = 16;
 constexpr int KAMIKAZE_LEN = 5;
 constexpr int SURVIVE_DEPTH = 40;
 constexpr int SURVIVE_BUDGET = tuning::SURVIVE_NODES;
-constexpr int HEAD_REACH = 2;
+constexpr int HEAD_REACH = tuning::HEAD_REACH;
 constexpr int FEED_RANGE = 3;
 constexpr long long CROWD = PEARL / 8;
 
@@ -185,6 +185,8 @@ class Brain {
     int ram_margin_ = tuning::RAM_MARGIN;
     int feed_round_ = -1;         // -1: FEED_ROUND / FEED_ROUND_SMALL by map size
     int king_hold_round_ = -1;    // -1: KING_HOLD_ROUND
+    bool hold_ = true;
+    int rich_pull_ = tuning::RICH_PULL;
     int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
     std::vector<int> rich_field_; // blind maps: steps to the nearest tile seen spawning fast
     int rich_field_round_ = -1000;
@@ -234,6 +236,8 @@ class Brain {
         ram_margin_ = tuning::RAM_MARGIN;
         feed_round_ = -1;
         king_hold_round_ = -1;
+        hold_ = true;
+        rich_pull_ = tuning::RICH_PULL;
         for (tuning::MapProfile const& profile : tuning::MAP_PROFILES) {
             bool by_size = profile.width > 0;
             bool match = by_size ? profiled_ == nullptr && profile.width == w_ && profile.height == h_
@@ -244,6 +248,8 @@ class Brain {
             ram_margin_ = profile.ram_margin >= 0 ? profile.ram_margin : ram_margin_;
             feed_round_ = profile.feed_round;
             king_hold_round_ = profile.king_hold_round;
+            hold_ = profile.hold != 0;
+            rich_pull_ = profile.rich_pull >= 0 ? profile.rich_pull : rich_pull_;
         }
     }
 
@@ -803,12 +809,15 @@ class Brain {
         if (here <= tuning::RICH_NEAR || !map_.starving_region(head_)) {
             return 0;
         }
-        return static_cast<long long>(here - there) * tuning::RICH_PULL * PEARL / 10;
+        return static_cast<long long>(here - there) * rich_pull_ * PEARL / 10;
     }
 
     // Inside a rich zone we hold ground: packed together and trading heads
     // is how the zone is kept, so crowding and ram risk count for less.
     bool holding() {
+        if (!hold_) {
+            return false;
+        }
         // Only on a baked map: on unknown maps (random test maps, the
         // sprint's new map) holding tested worse, 15-21 against 21-15.
         if (map_.known() == nullptr) {
@@ -1154,6 +1163,9 @@ class Brain {
     // further out the guess is too loose to rule tiles out.
     bool head_can_reach(int cell, int moves) const {
         for (Other const& other : others_) {
+            if (!other.enemy && tuning::HEAD_REACH_ALLIES == 0) {
+                continue;
+            }
             if (logic::manhattan(cx(cell), cy(cell), other.x, other.y, w_, h_) <= moves) {
                 return true;
             }
