@@ -94,6 +94,14 @@ static constexpr int SQUEEZE_LASTS_BLIND = 2;
 // Dragons at least this long never end a move where an enemy head could
 // reach them next turn unless nothing else lives.
 static constexpr int KING_GUARD_LEN = 8;
+// Room counts and the survival search treat tiles another head could reach
+// within this many moves as taken, for the first moves only ...
+static constexpr int HEAD_REACH = 2;
+// ... counting allied heads too (1) or only enemy heads (0). In our own
+// swarm nearly every tile is within reach of an ally, so no single step
+// counted as safe: we sprinted 5-20 times per 1000 dragon-turns (a segment
+// each) where top-10 teams sprint 1-4, and split less (splits need a safe step).
+static constexpr int HEAD_REACH_ALLIES = 0;
 // With no safe move, the cost in pearls of a portal crossing we cannot see
 // through: off our slot (allies cross the other way), or onto a landing a
 // dragon stood near lately. AS_UNSAFE or more ranks it below every other move.
@@ -149,12 +157,17 @@ struct MapProfile {
     int ram_margin;
     int feed_round;       // replaces FEED_ROUND and FEED_ROUND_SMALL
     int king_hold_round;
+    int hold = -1;        // 0: never hold ground near jackpots
+    int rich_pull = -1;   // replaces RICH_PULL
 };
 // Wins for the override vs the default, summed over every local run:
 static constexpr MapProfile MAP_PROFILES[] = {
     {"Queen Of Spades", 0, 0, 1, -1, -1},     // careful rams: 31/52
     {"Autarky", 0, 0, -1, 410, -1},           // feed earlier: 26/36
     {"Slithery Fight", 63, 27, -1, -1, 100},  // king stops splitting at 100: 23/36
+    // No pull toward the fast corridor: the whole swarm piled into it, ate
+    // twice what top-10 teams eat there and grew half as much (36/60).
+    {"Trauma", 0, 0, -1, -1, -1, -1, 0},
 };
 
 }  // namespace tuning
