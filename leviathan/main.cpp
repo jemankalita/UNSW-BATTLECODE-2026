@@ -115,7 +115,7 @@ class Brain {
         // that keeps us alive a couple of moves is worth more than a segment.
         Plan const* squeeze = best_of(plans, false);
         int squeeze_need = map_.known() != nullptr ? tuning::SQUEEZE_LASTS : tuning::SQUEEZE_LASTS_BLIND;
-        bool squeeze_lives = squeeze != nullptr && squeeze->lasts >= squeeze_need;
+        bool squeeze_lives = squeeze != nullptr && squeeze->lasts >= squeeze_need && !squeeze->portal_blind;
         if (!any_safe && squeeze_lives && best_ram(plans, true) == nullptr) {
             commit(ct, *squeeze, "squeeze");
             return;
@@ -609,6 +609,13 @@ class Brain {
         // We cannot see through a portal. A far tile we saw a dragon on
         // lately may still hold one, so that crossing is a last resort.
         plan.safe = plan.room >= need + pearls && lives && !plan.portal_blind;
+        // A long dragon is what wins the round-500 tiebreak, and a short enemy
+        // gladly trades itself for it: on the ladder a length-3 dragon rammed
+        // our length-21 king at round 492 and turned a won game into a loss.
+        // Ending where an enemy head can reach us next turn is a last resort.
+        if (len_ >= tuning::KING_GUARD_LEN && threat_[static_cast<std::size_t>(plan.cells.back())] > 0) {
+            plan.safe = false;
+        }
         int end = plan.cells.back();
         long long score = value_from(body, plan.length, steps > 1 ? SPRINT_VALUE_DEPTH : VALUE_DEPTH) -
                           static_cast<long long>(steps - 1) * PEARL;
@@ -618,7 +625,8 @@ class Brain {
             }
         }
         bool hold = holding();
-        int threat_share = hold ? tuning::HOLD_THREAT : 100;
+        bool guarded = len_ >= tuning::KING_GUARD_LEN;
+        int threat_share = hold && !guarded ? tuning::HOLD_THREAT : 100;
         if (plan.eaten > 0) {
             // A pearl in the mouth, often from a fresh corpse, is worth some
             // risk: the teams above us collect 2-5x our corpse pearls.
@@ -651,6 +659,16 @@ class Brain {
         if (!plan.safe) {
             score = -UNSAFE + static_cast<long long>(plan.lasts) * PEARL +
                     static_cast<long long>(plan.room) * PEARL / 10 + score / 1000;
+            // Out of safe moves, a crossing off its slot or a step onto a
+            // portal mouth still kills an ally we cannot see: on Trauma the
+            // ladder showed 15-27 of our own head-ons a game, all squeezes
+            // through the (16,7)/(10,0) portal. Those go last.
+            if (plan.portal_blind) {
+                score -= UNSAFE;
+            }
+            if (plan.mouth) {
+                score -= MOUTH_RISK;
+            }
         }
         plan.score = score;
     }
