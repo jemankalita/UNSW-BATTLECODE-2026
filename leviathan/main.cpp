@@ -179,6 +179,11 @@ class Brain {
     int deepest_ = 0;
     king::Tracker king_;
     int feed_target_ = -1;        // king's head while we walk over to feed it
+    // Knobs the map profile may override; see tuning::MAP_PROFILES.
+    mapdb::Known const* profiled_ = nullptr;
+    int ram_margin_ = tuning::RAM_MARGIN;
+    int feed_round_ = -1;         // -1: FEED_ROUND / FEED_ROUND_SMALL by map size
+    int king_hold_round_ = tuning::KING_HOLD_ROUND;
     int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
     std::vector<int> rich_field_; // blind maps: steps to the nearest tile seen spawning fast
     int rich_field_round_ = -1000;
@@ -202,6 +207,7 @@ class Brain {
         head_ = map_.index(here.x, here.y);
         map_.set_team_b(ct.get_team() == unswbc::Team::B);
         map_.observe(ct, round_);
+        apply_profile();
         if (pending_portal_) {
             map_.learn_exit(cx(portal_from_), cy(portal_from_), portal_dir_, here.x, here.y);
             pending_portal_ = false;
@@ -213,6 +219,29 @@ class Brain {
     }
 
     // ---- the king ------------------------------------------------------------
+
+    // Once the baked map is recognised, switch to its profile. Unknown maps
+    // (a new tournament map) keep the defaults, which are tuned for them.
+    void apply_profile() {
+        if (map_.known() == profiled_) {
+            return;
+        }
+        profiled_ = map_.known();
+        ram_margin_ = tuning::RAM_MARGIN;
+        feed_round_ = -1;
+        king_hold_round_ = tuning::KING_HOLD_ROUND;
+        if (profiled_ == nullptr) {
+            return;
+        }
+        for (tuning::MapProfile const& profile : tuning::MAP_PROFILES) {
+            if (std::string(profile.name) != profiled_->name) {
+                continue;
+            }
+            ram_margin_ = profile.ram_margin >= 0 ? profile.ram_margin : ram_margin_;
+            feed_round_ = profile.feed_round;
+            king_hold_round_ = profile.king_hold_round >= 0 ? profile.king_hold_round : king_hold_round_;
+        }
+    }
 
     void follow_king(unswbc::Controller& ct) {
         for (std::uint64_t word : ct.get_sonar_messages()) {
@@ -236,7 +265,7 @@ class Brain {
         }
         feed_target_ = -1;
         bool small_map = w_ * h_ < tuning::FEED_CAP_TILES;
-        int feed_round = small_map ? tuning::FEED_ROUND_SMALL : tuning::FEED_ROUND;
+        int feed_round = feed_round_ >= 0 ? feed_round_ : small_map ? tuning::FEED_ROUND_SMALL : tuning::FEED_ROUND;
         if (round_ >= feed_round && feed_floor_ < 0) {
             int share = small_map ? tuning::FEED_SHARE : 0;
             feed_floor_ = logic::feed_floor(units_, tuning::FEED_KEEP, share);
@@ -414,7 +443,7 @@ class Brain {
                         if (occ_[static_cast<std::size_t>(to)] >= 0 && to != head_) {
                             continue;
                         }
-                        int cost = logic::ram_threat(len_, other.len, units_, reach, tuning::RAM_MARGIN);
+                        int cost = logic::ram_threat(len_, other.len, units_, reach, ram_margin_);
                         if (cost > threat_[static_cast<std::size_t>(to)]) {
                             if (threat_[static_cast<std::size_t>(to)] == 0) {
                                 threat_list_.push_back(to);
@@ -797,7 +826,7 @@ class Brain {
             return false;
         }
         king::Report const& crown = king_.best();
-        if (round_ >= tuning::KING_HOLD_ROUND && crown.valid && crown.id == id_) {
+        if (round_ >= king_hold_round_ && crown.valid && crown.id == id_) {
             return false;
         }
         int entry = plan.cells.back();
@@ -867,7 +896,7 @@ class Brain {
             return false;
         }
         king::Report const& crown = king_.best();
-        if (round_ >= tuning::KING_HOLD_ROUND && crown.valid && crown.id == id_) {
+        if (round_ >= king_hold_round_ && crown.valid && crown.id == id_) {
             return false;
         }
         std::vector<int> body = body_after(plan);
@@ -1233,7 +1262,7 @@ class Brain {
             return 0;
         }
         int theirs = enemy_len_at(cell);
-        if (!logic::worth_ram(len_, theirs, units_, false, tuning::RAM_MARGIN)) {
+        if (!logic::worth_ram(len_, theirs, units_, false, ram_margin_)) {
             return 0;
         }
         return gamma_[static_cast<std::size_t>(t)] * (100 + 10 * theirs) / 100;
@@ -1257,7 +1286,7 @@ class Brain {
     Plan const* best_ram(std::vector<Plan> const& plans, bool cornered) const {
         Plan const* best = nullptr;
         for (Plan const& plan : plans) {
-            if (plan.ram_len <= 0 || !logic::worth_ram(len_, plan.ram_len, units_, cornered, tuning::RAM_MARGIN)) {
+            if (plan.ram_len <= 0 || !logic::worth_ram(len_, plan.ram_len, units_, cornered, ram_margin_)) {
                 continue;
             }
             if (best == nullptr || plan.ram_len > best->ram_len) {
@@ -1278,7 +1307,7 @@ class Brain {
             return false;
         }
         king::Report const& crown = king_.best();
-        if (round_ >= tuning::KING_HOLD_ROUND && crown.valid && crown.id == id_) {
+        if (round_ >= king_hold_round_ && crown.valid && crown.id == id_) {
             return false;
         }
         // Ladder replays: the teams that beat us split whenever they can and

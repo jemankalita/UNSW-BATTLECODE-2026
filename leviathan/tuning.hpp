@@ -139,4 +139,19 @@ static constexpr int FEED_SHARE = 0;
 // that fed itself down (Default Small, Autarky replays).
 static constexpr int FEED_CAP_TILES = 1100;
 
+// Per-map overrides, chosen from local per-map results (tools: eval4.sh).
+// -1 keeps the default. Maps not listed, and maps the bot does not
+// recognise (the tournament's new maps), play with the defaults above.
+struct MapProfile {
+    char const* name;
+    int ram_margin;
+    int feed_round;       // replaces FEED_ROUND and FEED_ROUND_SMALL
+    int king_hold_round;
+};
+static constexpr MapProfile MAP_PROFILES[] = {
+    {"Queen Of Spades", 1, -1, -1},
+    {"Default", 1, -1, -1},
+    {"Autarky", -1, 410, -1},
+};
+
 }  // namespace tuning
