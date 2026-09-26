@@ -82,7 +82,7 @@ class Brain {
     Brain(int width, int height)
         : map_(width, height), w_(width), h_(height), n_(width * height),
           occ_(static_cast<std::size_t>(n_), -1), occ_enemy_(static_cast<std::size_t>(n_), 0),
-          threat_(static_cast<std::size_t>(n_), 0), mark_(static_cast<std::size_t>(n_), 0) {
+          threat_(static_cast<std::size_t>(n_), 0), near_(static_cast<std::size_t>(n_), 0), mark_(static_cast<std::size_t>(n_), 0) {
         long long weight = PEARL;
         for (int t = 0; t <= VALUE_DEPTH; ++t) {
             gamma_.push_back(weight);
@@ -168,6 +168,7 @@ class Brain {
     std::vector<Other> others_;
     std::vector<int> threat_;     // cost of ending a move on each tile
     std::vector<int> threat_list_;
+    std::vector<char> near_;      // an enemy head reaches it with a single step
     std::vector<int> mark_;
     int stamp_ = 0;
     std::vector<long long> gamma_;
@@ -391,6 +392,7 @@ class Brain {
     void map_threats() {
         for (int cell : threat_list_) {
             threat_[static_cast<std::size_t>(cell)] = 0;
+            near_[static_cast<std::size_t>(cell)] = 0;
         }
         threat_list_.clear();
         for (Other const& other : others_) {
@@ -417,6 +419,9 @@ class Brain {
                                 threat_list_.push_back(to);
                             }
                             threat_[static_cast<std::size_t>(to)] = cost;
+                        }
+                        if (reach == 1 && cost > 0) {
+                            near_[static_cast<std::size_t>(to)] = 1;
                         }
                         next.push_back(to);
                     }
@@ -612,8 +617,10 @@ class Brain {
         // A long dragon is what wins the round-500 tiebreak, and a short enemy
         // gladly trades itself for it: on the ladder a length-3 dragon rammed
         // our length-21 king at round 492 and turned a won game into a loss.
-        // Ending where an enemy head can reach us next turn is a last resort.
-        if (len_ >= tuning::KING_GUARD_LEN && threat_[static_cast<std::size_t>(plan.cells.back())] > 0) {
+        // Ending a step from an enemy head is a last resort. Only a step: a
+        // berth that also shuns sprint reach makes the champion too timid to
+        // hold ground (the loong series measured a wider berth as a loss).
+        if (len_ >= tuning::KING_GUARD_LEN && near_[static_cast<std::size_t>(plan.cells.back())] != 0) {
             plan.safe = false;
         }
         int end = plan.cells.back();
