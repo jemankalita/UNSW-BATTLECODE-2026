@@ -55,6 +55,7 @@ struct Plan {
     bool safe = false;
     bool portal = false;
     bool portal_blind = false;  // out of view, and a dragon stood there lately
+    bool off_slot = false;      // crossing outside our team's slot for it
     bool explore = false;       // through a portal whose far end we have never seen
     bool mouth = false;         // walks onto a portal mouth out of its slot
     bool dive = false;          // into a dead-end nook, to eat, split the children out and die
@@ -115,7 +116,7 @@ class Brain {
         // that keeps us alive a couple of moves is worth more than a segment.
         Plan const* squeeze = best_of(plans, false);
         int squeeze_need = map_.known() != nullptr ? tuning::SQUEEZE_LASTS : tuning::SQUEEZE_LASTS_BLIND;
-        bool squeeze_lives = squeeze != nullptr && squeeze->lasts >= squeeze_need && !squeeze->portal_blind;
+        bool squeeze_lives = squeeze != nullptr && squeeze->lasts >= squeeze_need && blind_cost(*squeeze) < UNSAFE;
         if (!any_safe && squeeze_lives && best_ram(plans, true) == nullptr) {
             commit(ct, *squeeze, "squeeze");
             return;
@@ -485,6 +486,7 @@ class Brain {
             next.portal = next.portal || land.portal;
             if (land.portal && (blind_landing(cell) || !map_.crossing_allowed(from, cell, round_))) {
                 next.portal_blind = true;
+                next.off_slot = next.off_slot || !map_.crossing_allowed(from, cell, round_);
             }
             if (!land.portal && map_.mouth_risk(cell, round_)) {
                 next.mouth = true;
@@ -504,6 +506,23 @@ class Brain {
 
     // We cannot see through a portal. If a dragon stood on the far tile or
     // right beside it lately, it may still be there, or step onto us.
+    // What a crossing we cannot see through costs once no move is safe.
+    // Off our slot, an ally may be crossing the other way onto our head;
+    // otherwise the risk is a dragon seen near the landing lately. A dragon
+    // trapped in a small room joined to the rest only by portals (Default's
+    // 16-tile rooms) has to take its chance off-slot; elsewhere (Stronghold,
+    // Trauma, any unknown map) it waits for its slot.
+    long long blind_cost(Plan const& plan) const {
+        if (!plan.portal_blind) {
+            return 0;
+        }
+        int region = map_.region_size(head_);
+        bool trapped = region > 0 && region <= tuning::TRAPPED_ROOM;
+        int pearls = !plan.off_slot ? tuning::BLIND_LANDING_PEARLS
+                                    : trapped ? tuning::OFF_SLOT_TRAPPED_PEARLS : tuning::OFF_SLOT_PEARLS;
+        return pearls >= tuning::AS_UNSAFE ? UNSAFE : static_cast<long long>(pearls) * PEARL;
+    }
+
     bool blind_landing(int cell) const {
         if (map_.cell(cell).seen_round == round_) {
             return false;
@@ -670,9 +689,7 @@ class Brain {
             // portal mouth still kills an ally we cannot see: on Trauma the
             // ladder showed 15-27 of our own head-ons a game, all squeezes
             // through the (16,7)/(10,0) portal. Those go last.
-            if (plan.portal_blind) {
-                score -= UNSAFE;
-            }
+            score -= blind_cost(plan);
             if (plan.mouth) {
                 score -= MOUTH_RISK;
             }

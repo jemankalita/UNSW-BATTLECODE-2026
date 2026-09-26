@@ -92,6 +92,16 @@ static constexpr int SQUEEZE_LASTS_BLIND = 2;
 // Dragons at least this long never end a move where an enemy head could
 // reach them next turn unless nothing else lives.
 static constexpr int KING_GUARD_LEN = 8;
+// With no safe move, the cost in pearls of a portal crossing we cannot see
+// through: off our slot (allies cross the other way), or onto a landing a
+// dragon stood near lately. AS_UNSAFE or more ranks it below every other move.
+static constexpr int AS_UNSAFE = 1000000;
+static constexpr int OFF_SLOT_PEARLS = AS_UNSAFE;
+static constexpr int BLIND_LANDING_PEARLS = AS_UNSAFE;
+// ...except from an on-foot region this small (baked maps only), where an
+// off-slot crossing is the only way out of a portal room.
+static constexpr int TRAPPED_ROOM = 24;
+static constexpr int OFF_SLOT_TRAPPED_PEARLS = 20;
 // Nook diving: only dragons at most this long dive (a long dragon is worth
 // more alive), ...
 static constexpr int DIVE_MAX_LEN = 6;
