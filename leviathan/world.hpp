@@ -249,6 +249,7 @@ class Map {
     std::vector<int> rich_dist_;        // steps to the nearest rich tile, baked maps only
     std::vector<int> jackpot_dist_;     // steps to the nearest jackpot tile, baked maps only
     std::vector<char> region_rich_;     // whether each tile's on-foot region holds a rich tile
+    std::vector<char> region_field_;    // whether it is a field: many slow tiles, a high total rate
     std::vector<int> region_size_;      // tiles in each tile's on-foot region
     std::vector<int> region_id_;        // lowest tile index of each tile's on-foot region
     std::vector<int> network_size_;     // see living_room()
@@ -392,7 +393,9 @@ class Map {
             // A rich tile in a pocket too small to live in (Queen of Spades'
             // 16-tile fountain rooms, entered only by portal) is a trap, not
             // a destination: pulling toward them lost QoS 0/16 vs 7/16.
-            if (is_rich(i) && network_size_[static_cast<std::size_t>(i)] >= RICH_REGION_MIN) {
+            bool field_tile = region_field_[static_cast<std::size_t>(i)] != 0 &&
+                              known_->gaps[known_->tiles[i] - 'a'].hi > 0;
+            if ((is_rich(i) && network_size_[static_cast<std::size_t>(i)] >= RICH_REGION_MIN) || field_tile) {
                 rich_dist_[static_cast<std::size_t>(i)] = 0;
                 queue.push_back(i);
             }
@@ -476,6 +479,7 @@ class Map {
     // a rich tile.
     void label_regions() {
         region_rich_.assign(static_cast<std::size_t>(size()), 0);
+        region_field_.assign(static_cast<std::size_t>(size()), 0);
         region_size_.assign(static_cast<std::size_t>(size()), 0);
         region_id_.assign(static_cast<std::size_t>(size()), -1);
         std::vector<int> region(static_cast<std::size_t>(size()), -1);
@@ -501,8 +505,21 @@ class Map {
                     }
                 }
             }
+            // A field of slow tiles feeds a swarm as well as a fast tile does
+            // (Trauma's middle: 110 tiles, about a pearl a round). Per mille
+            // pearls a round: one tile spawns every (lo + hi) / 2 rounds.
+            int rate = 0;
             for (int cell : members) {
-                region_rich_[static_cast<std::size_t>(cell)] = rich ? 1 : 0;
+                mapdb::Gap const& g = known_->gaps[known_->tiles[cell] - 'a'];
+                if (g.hi > 0) {
+                    rate += 2000 / (g.lo + g.hi);
+                }
+            }
+            bool field = tuning::FIELD_RATE > 0 && rate >= tuning::FIELD_RATE &&
+                         static_cast<int>(members.size()) >= RICH_REGION_MIN;
+            for (int cell : members) {
+                region_rich_[static_cast<std::size_t>(cell)] = rich || field ? 1 : 0;
+                region_field_[static_cast<std::size_t>(cell)] = field ? 1 : 0;
                 region_size_[static_cast<std::size_t>(cell)] = static_cast<int>(members.size());
                 region_id_[static_cast<std::size_t>(cell)] = start;
             }
