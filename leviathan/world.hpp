@@ -205,6 +205,13 @@ class Map {
         return jackpot_dist_.empty() ? -1 : jackpot_dist_[static_cast<std::size_t>(cell)];
     }
 
+    // Steps to the nearest rich tile in a room too small to live in, one
+    // entered only by portal (Queen of Spades' two 16-tile fountain rooms);
+    // 0 inside one, -1 when unknown or the map has none.
+    int room_dist(int cell) const {
+        return room_dist_.empty() ? -1 : room_dist_[static_cast<std::size_t>(cell)];
+    }
+
     // True when the tiles reachable from 'cell' on foot, without portals,
     // hold no rich tile: Stronghold's and Trauma's spawns and the part of
     // Queen of Spades outside its fountain room. Only there does it pay to
@@ -248,6 +255,7 @@ class Map {
     bool team_b_ = false;
     std::vector<int> rich_dist_;        // steps to the nearest rich tile, baked maps only
     std::vector<int> jackpot_dist_;     // steps to the nearest jackpot tile, baked maps only
+    std::vector<int> room_dist_;        // steps to the nearest rich tile of a small room, baked maps only
     std::vector<char> region_rich_;     // whether each tile's on-foot region holds a rich tile
     std::vector<char> region_field_;    // whether it is a field: many slow tiles, a high total rate
     std::vector<int> region_size_;      // tiles in each tile's on-foot region
@@ -365,6 +373,9 @@ class Map {
         jackpot_dist_ = distance_field([this](int i) {
             mapdb::Gap const& g = known_->gaps[known_->tiles[i] - 'a'];
             return g.hi > 0 && g.hi <= JACKPOT_GAP && network_size_[static_cast<std::size_t>(i)] >= RICH_REGION_MIN;
+        });
+        room_dist_ = distance_field([this](int i) {
+            return is_rich(i) && network_size_[static_cast<std::size_t>(i)] < RICH_REGION_MIN;
         });
         if (symmetry_ < 0 && !broken_ && known_->symmetry >= 0 && possible_[known_->symmetry]) {
             for (int kind = 0; kind < logic::SYM_KINDS; ++kind) {
