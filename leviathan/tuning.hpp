@@ -48,6 +48,12 @@ static constexpr int BIG_MAP_CAP = 64;
 // all but a two-segment head (0: never), when its tail has this much room.
 static constexpr int REVERSE_LEN = 0;
 static constexpr int REVERSE_ROOM = 4;
+// Anti-camping: after BORED_AFTER rounds without eating, ending a move on a
+// tile among our head's last BORED_WINDOW tiles costs BORED_PENALTY tenths
+// of a pearl per visit (0: off).
+static constexpr int BORED_AFTER = 12;
+static constexpr int BORED_WINDOW = 16;
+static constexpr int BORED_PENALTY = 5;
 // A dragon rams an enemy head at least this much longer (both die). 0 trades
 // evenly: the top-20 teams win by attrition, 30 head-on trades a game in the
 // first 200 rounds, most of them started by the winner.
@@ -172,12 +178,19 @@ struct MapProfile {
     int king_hold_round;
     int hold = -1;        // 0: never hold ground near jackpots
     int rich_pull = -1;   // replaces RICH_PULL
+    int bored_after = -1; // replaces BORED_AFTER (0: no anti-camping)
 };
 // Wins for the override vs the default, summed over every local run:
 static constexpr MapProfile MAP_PROFILES[] = {
-    {"Queen Of Spades", 0, 0, 1, -1, -1},     // careful rams: 31/52
-    {"Autarky", 0, 0, -1, 410, -1},           // feed earlier: 26/36
+    // Autarky, Schooltime, Trophy, Portals and Slithery Fight are not
+    // baked: playing them blind beat playing them baked (Schooltime 12-0,
+    // Autarky 9-3, Portals 16-4; Trophy even), so their entries match by size.
+    {"Queen Of Spades", 0, 0, 1, -1, -1},     // careful rams: 31/52; baked + anti-camping 20-4
+    {"Autarky", 54, 18, -1, 410, -1},         // feed earlier: 26/36
     {"Slithery Fight", 63, 27, -1, -1, 100},  // king stops splitting at 100: 23/36
+    // No anti-camping where it lost (bo12: Devil 2/8, Prisoners Dilemma 0/8).
+    {"Devil", 0, 0, -1, -1, -1, -1, -1, 0},
+    {"Prisoners Dilemma", 0, 0, -1, -1, -1, -1, -1, 0},
 };
 
 }  // namespace tuning
