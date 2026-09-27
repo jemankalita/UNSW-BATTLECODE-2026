@@ -102,9 +102,7 @@ class Brain {
         }
         bool any_safe = best_of(plans, true) != nullptr;
 
-        // The king trades itself only when nothing else lives.
-        bool keep_king = tuning::KING_SAFE != 0 && any_safe && is_king();
-        Plan const* ram = keep_king ? nullptr : best_ram(plans, !any_safe);
+        Plan const* ram = best_ram(plans, !any_safe);
         if (ram != nullptr) {
             commit(ct, *ram, "ram");
             return;
@@ -195,9 +193,8 @@ class Brain {
     bool hold_ = true;
     int rich_pull_ = tuning::RICH_PULL;
     int bored_after_ = tuning::BORED_AFTER;
-    int rooms_ = 0;               // room-race pull, tenths of a pearl per step (0: off)
-    int rush_rounds_ = tuning::RUSH_ROUNDS;
-    int feed_floor_ = -1;        // team size feeding may not go below, set when it starts
+    bool dive_ = true;            // profile: dead-end nook dives allowed
+    int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
     std::vector<int> rich_field_; // blind maps: steps to the nearest tile seen spawning fast
     int rich_field_round_ = -1000;
     bool pending_portal_ = false;
@@ -230,7 +227,6 @@ class Brain {
             recent_.erase(recent_.begin());
         }
         map_.set_team_b(ct.get_team() == unswbc::Team::B);
-        king_.set_team(ct.get_team() == unswbc::Team::B);
         map_.observe(ct, round_);
         apply_profile();
         if (pending_portal_) {
@@ -261,8 +257,7 @@ class Brain {
         hold_ = true;
         rich_pull_ = tuning::RICH_PULL;
         bored_after_ = tuning::BORED_AFTER;
-        rooms_ = 0;
-        rush_rounds_ = tuning::RUSH_ROUNDS;
+        dive_ = true;
         for (tuning::MapProfile const& profile : tuning::MAP_PROFILES) {
             bool by_size = profile.width > 0;
             bool match = by_size ? profiled_ == nullptr && profile.width == w_ && profile.height == h_
@@ -276,29 +271,12 @@ class Brain {
             hold_ = profile.hold != 0;
             rich_pull_ = profile.rich_pull >= 0 ? profile.rich_pull : rich_pull_;
             bored_after_ = profile.bored_after >= 0 ? profile.bored_after : bored_after_;
-            rooms_ = profile.rooms > 0 ? profile.rooms : 0;
-            rush_rounds_ = profile.rush >= 0 ? profile.rush : rush_rounds_;
+            dive_ = profile.dive != 0;
         }
     }
 
     int king_hold() const {
         return king_hold_round_ >= 0 ? king_hold_round_ : tuning::KING_HOLD_ROUND;
-    }
-
-    // From the hold round, the dragon the team crowns grows for the round-500
-    // tiebreak: it stops splitting and diving, and every ally feeds it.
-    bool is_king() const {
-        king::Report const& crown = king_.best();
-        return round_ >= king_hold() && crown.valid && crown.id == id_;
-    }
-
-    // Ladder: our longest dragon at round 300 (length 6) died before the end
-    // in 94% of the games that went the distance, around round 334, 40% of
-    // them head-on; the top teams' (length 11) died in 68%. A dragon this
-    // long, or the crowned king, never ends a step where an enemy head could
-    // reach it next turn unless nothing else lives.
-    bool guarded() const {
-        return len_ >= tuning::KING_GUARD_LEN || (tuning::KING_SAFE != 0 && is_king());
     }
 
     void follow_king(unswbc::Controller& ct) {
@@ -312,12 +290,8 @@ class Brain {
             }
         }
         king_.expire(round_);
-        // A king missing from where a fresh report put it has died. An older
-        // report's king has simply moved on: forgetting it there crowned 59
-        // dragons a game locally, 19 of them while the team fed the king.
         king::Report const& crown = king_.best();
-        bool fresh = round_ - crown.round <= tuning::KING_FORGET_AGE;
-        if (crown.valid && crown.id != id_ && fresh && ct.get_tile(unswbc::Position(crown.x, crown.y)) != nullptr &&
+        if (crown.valid && crown.id != id_ && ct.get_tile(unswbc::Position(crown.x, crown.y)) != nullptr &&
             !ally_head_seen(crown.id)) {
             king_.forget();
             king_.offer(id_, cx(head_), cy(head_), len_, round_);
@@ -730,7 +704,7 @@ class Brain {
         // Ending a step from an enemy head is a last resort. Only a step: a
         // berth that also shuns sprint reach makes the champion too timid to
         // hold ground (the loong series measured a wider berth as a loss).
-        if (guarded() && near_[static_cast<std::size_t>(plan.cells.back())] != 0) {
+        if (len_ >= tuning::KING_GUARD_LEN && near_[static_cast<std::size_t>(plan.cells.back())] != 0) {
             plan.safe = false;
         }
         int end = plan.cells.back();
@@ -742,7 +716,8 @@ class Brain {
             }
         }
         bool hold = holding();
-        int threat_share = hold && !guarded() ? tuning::HOLD_THREAT : 100;
+        bool guarded = len_ >= tuning::KING_GUARD_LEN;
+        int threat_share = hold && !guarded ? tuning::HOLD_THREAT : 100;
         if (plan.eaten > 0) {
             // A pearl in the mouth, often from a fresh corpse, is worth some
             // risk: the teams above us collect 2-5x our corpse pearls.
@@ -757,7 +732,6 @@ class Brain {
             score -= crowding(end);
         }
         score += rich_pull(end);
-        score += room_pull(end);
         if (plan.portal) {
             score -= PORTAL_RISK;
         }
@@ -775,7 +749,7 @@ class Brain {
             score -= visits * tuning::BORED_PENALTY * PEARL / 10;
         }
         long long dive_score = 0;
-        if (!plan.safe && steps == 1 && !plan.portal &&
+        if (dive_ && !plan.safe && steps == 1 && !plan.portal &&
             (dive_worth(plan, dive_score) || pocket_worth(plan, dive_score))) {
             plan.safe = true;
             plan.dive = true;
@@ -861,35 +835,13 @@ class Brain {
         if (here < 0 || there < 0) {
             return 0;
         }
-        if (round_ < rush_rounds_ && here > tuning::RUSH_NEAR) {
+        if (round_ < tuning::RUSH_ROUNDS && here > tuning::RUSH_NEAR) {
             return static_cast<long long>(here - there) * tuning::RUSH_PULL * PEARL / 10;
         }
         if (here <= tuning::RICH_NEAR || !map_.starving_region(head_)) {
             return 0;
         }
         return static_cast<long long>(here - there) * rich_pull_ * PEARL / 10;
-    }
-
-    // Queen of Spades' two portal rooms grow 60% of its pearls, and the teams
-    // that beat us there walk into the nearer one by round 25-45 and keep
-    // about two dragons in it, plus one in the far room, splitting their
-    // children there. A room holds few dragons, and we cannot see into one
-    // from its door, so the farmers are chosen by id: one dragon in
-    // ROOM_SHARE, and the first dragon of each team (ids 0 and 1).
-    bool room_farmer() const {
-        return rooms_ > 0 && (id_ / 2) % tuning::ROOM_SHARE == 0;
-    }
-
-    long long room_pull(int end) const {
-        if (!room_farmer() || map_.known() == nullptr || round_ >= tuning::ROOM_ROUNDS) {
-            return 0;
-        }
-        int here = map_.room_dist(head_);
-        int there = map_.room_dist(end);
-        if (here <= 0 || there < 0 || here > tuning::ROOM_REACH) {
-            return 0;
-        }
-        return static_cast<long long>(here - there) * rooms_ * PEARL / 10;
     }
 
     // Inside a rich zone we hold ground: packed together and trading heads
@@ -1298,11 +1250,8 @@ class Brain {
         bool dead = baked && hi <= 0;
         // A pocket too small to live in, reached only by portal (Queen of
         // Spades' 16-tile fountain rooms), is a trap: dragons that go in
-        // for its pearls jam the doorway and starve. Price it as fog. On a
-        // map that farms its rooms, only the farmers see past that, and the
-        // rest, even those born inside, walk out.
-        bool small = baked && map_.living_room(cell) < world::Map::RICH_REGION_MIN;
-        if (small && (rooms_ > 0 ? !room_farmer() : !map_.same_region(cell, head_))) {
+        // for its pearls jam the doorway and starve. Price it as fog.
+        if (baked && map_.living_room(cell) < world::Map::RICH_REGION_MIN && !map_.same_region(cell, head_)) {
             baked = false;
             lo = 0;
             hi = 0;
@@ -1361,7 +1310,7 @@ class Brain {
     // A short dragon is drawn toward a clearly longer enemy head: reaching it
     // is a ram that trades up.
     long long ram_bait(int cell, int t) const {
-        if (len_ > KAMIKAZE_LEN || units_ <= 1 || !is_enemy_head(cell) || (tuning::KING_SAFE != 0 && is_king())) {
+        if (len_ > KAMIKAZE_LEN || units_ <= 1 || !is_enemy_head(cell)) {
             return 0;
         }
         int theirs = enemy_len_at(cell);
@@ -1414,13 +1363,6 @@ class Brain {
         }
         king::Report const& crown = king_.best();
         if (round_ >= king_hold() && crown.valid && crown.id == id_) {
-            return false;
-        }
-        // A long dragon that hears of a longer king stops being king, and used
-        // to split itself back into two-segment farmers at once: the team's
-        // main king changed 9 times a game after round 300, 4 of them this
-        // way. Past the hold round a long dragon stays long, a spare king.
-        if (tuning::PRINCE_LEN > 0 && round_ >= king_hold() && len_ >= tuning::PRINCE_LEN) {
             return false;
         }
         // Ladder replays: the teams that beat us split whenever they can and
@@ -1522,9 +1464,8 @@ class Brain {
         } else {
             ct.make_moves(dirs);
         }
-        // A trailing '*' in replays marks a dragon that knows the baked map,
-        // and a 'K' one that believes it is the king.
-        ct.set_indicator_string(std::string(label) + (map_.known() != nullptr ? "*" : "") + (is_king() ? "K" : ""));
+        // A trailing '*' in replays marks a dragon that knows the baked map.
+        ct.set_indicator_string(map_.known() != nullptr ? std::string(label) + "*" : std::string(label));
         for (int cell : plan.cells) {
             trail_.push_back(cell);
         }

@@ -113,16 +113,6 @@ static constexpr int SQUEEZE_LASTS_BLIND = 2;
 // Dragons at least this long never end a move where an enemy head could
 // reach them next turn unless nothing else lives.
 static constexpr int KING_GUARD_LEN = 8;
-// 1: the crowned king (from its hold round) is guarded at any length and
-// never rams or chases enemy heads while it has a safe move.
-static constexpr int KING_SAFE = 1;
-// A dragon forgets the king when it sees the king's reported tile without
-// the king only if the report is at most this many rounds old (1000: v22).
-static constexpr int KING_FORGET_AGE = 1;
-// From the hold round, a dragon at least this long does not split, so a king
-// that learns of a longer one does not dissolve into farmers (0: off; 6 went
-// 38-42 against KING_FORGET_AGE + KING_SAFE, 40-round king reports 32-48).
-static constexpr int PRINCE_LEN = 0;
 // Room counts and the survival search treat tiles another head could reach
 // within this many moves as taken, for the first moves only ...
 static constexpr int HEAD_REACH = 2;
@@ -189,29 +179,15 @@ struct MapProfile {
     int hold = -1;        // 0: never hold ground near jackpots
     int rich_pull = -1;   // replaces RICH_PULL
     int bored_after = -1; // replaces BORED_AFTER (0: no anti-camping)
-    int rooms = -1;       // > 0: race for small portal rooms, this many tenths of a pearl per step
-    int rush = -1;        // replaces RUSH_ROUNDS: until this round every dragon heads for a rich tile
+    int dive = -1;        // 0: never dive into a dead-end nook
 };
-// Room race (MapProfile::rooms): dragons at most ROOM_REACH steps from a
-// small portal room, and nearer to it than every ally in view, are pulled
-// in until ROOM_ROUNDS.
-static constexpr int ROOM_REACH = 14;
-static constexpr int ROOM_ROUNDS = 400;
-// One dragon in this many (by id / 2) farms the rooms.
-static constexpr int ROOM_SHARE = 6;
 // Wins for the override vs the default, summed over every local run:
 static constexpr MapProfile MAP_PROFILES[] = {
     // Autarky, Schooltime, Trophy, Portals and Slithery Fight are not
     // baked: playing them blind beat playing them baked (Schooltime 12-0,
     // Autarky 9-3, Portals 16-4; Trophy even), so their entries match by size.
-    // Queen of Spades: its two portal rooms grow 60% of the map's pearls.
-    // Ladder winners walk into the nearer one by round 25-45 and keep two
-    // dragons in it; v22 prices the rooms as traps, gets there by round 67
-    // and went 1-14. Racing in (rooms 3/6/10, or only unpricing the trap)
-    // lost 0-16 locally: the whole team piles in by round 10 and starves
-    // outside, so it stays off until a room keeps a headcount.
-    {"Queen Of Spades", 0, 0, 1, -1, -1},     // careful rams: 31/52; baked + anti-camping 20-4
-    {"Autarky", 54, 18, -1, 410, -1},         // feed earlier: 26/36
+    {"Queen Of Spades", 0, 0, 1, -1, -1, -1, -1, -1, 0},  // careful rams 31/52; no nook dives (ladder 13-39, 26 nook deaths a game vs 16)
+    {"Autarky", 54, 18, -1, 410, -1, -1, -1, -1, 0},     // feed earlier 26/36; no nook dives (ladder 18-30, 21 kelp deaths by r100 vs 14)
     {"Slithery Fight", 63, 27, -1, -1, 100},  // king stops splitting at 100: 23/36
     // No anti-camping where it lost (bo12: Devil 2/8, Prisoners Dilemma 0/8).
     {"Devil", 0, 0, -1, -1, -1, -1, -1, 0},

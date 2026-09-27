@@ -9,8 +9,7 @@
 // relay every turn, so the whole team settles on the same dragon.
 namespace king {
 
-// Rounds a report stays usable once nobody has refreshed it. 10 went 42-38
-// against 20 on the ranked pool but 37-45 on unseen maps; 40 lost 32-48.
+// Rounds a report stays usable once nobody has refreshed it.
 static constexpr int STALE = 20;
 
 struct Report {
@@ -43,14 +42,8 @@ class Tracker {
         }
     }
 
-    // Each team signs with its own key, so a sonar that reaches the other
-    // team's dragons (it stops at the first body of either team) is noise.
-    void set_team(bool team_b) {
-        key_ = team_b ? logic::SONAR_KEY ^ logic::SONAR_TEAM_B : logic::SONAR_KEY;
-    }
-
     void hear(std::uint64_t word, int now) {
-        logic::SonarMsg msg = logic::unpack_sonar(word, key_);
+        logic::SonarMsg msg = logic::unpack_sonar(word);
         if (!msg.ok || msg.kind != logic::KIND_KING) {
             return;
         }
@@ -75,12 +68,11 @@ class Tracker {
 
     std::uint64_t message() const {
         int len = best_.len > 255 ? 255 : best_.len;
-        return logic::pack_sonar(logic::KIND_KING, best_.x, best_.y, len, best_.id, best_.round, key_);
+        return logic::pack_sonar(logic::KIND_KING, best_.x, best_.y, len, best_.id, best_.round);
     }
 
   private:
     Report best_;
-    std::uint64_t key_ = logic::SONAR_KEY;
 };
 
 }  // namespace king

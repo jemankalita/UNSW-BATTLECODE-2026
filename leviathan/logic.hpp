@@ -16,10 +16,6 @@ static constexpr int DIR_W = 3;
 static constexpr int KIND_KING = 3;
 
 static constexpr std::uint64_t SONAR_KEY = 0xA31B57C9E2046DF1ull;
-// Team B's messages use SONAR_KEY ^ SONAR_TEAM_B. A sonar reaches either
-// team, so in a local game against ourselves one key let each side crown the
-// other's king (on the ladder the other team's words fail the checksum).
-static constexpr std::uint64_t SONAR_TEAM_B = 0x5D2C8E71B4F90A63ull;
 static constexpr std::uint64_t SONAR_MUL = 0x9E3779B97F4A7C15ull;
 
 inline int opposite_dir(int dir) {
@@ -134,7 +130,7 @@ struct SonarMsg {
     int round_mod;
 };
 
-inline std::uint64_t pack_sonar(int kind, int x, int y, int aux, int id, int round, std::uint64_t key = SONAR_KEY) {
+inline std::uint64_t pack_sonar(int kind, int x, int y, int aux, int id, int round) {
     std::uint64_t body = 0;
     body |= static_cast<std::uint64_t>(kind & 15);
     body |= static_cast<std::uint64_t>(x & 255) << 4;
@@ -143,10 +139,10 @@ inline std::uint64_t pack_sonar(int kind, int x, int y, int aux, int id, int rou
     body |= static_cast<std::uint64_t>(id & 4095) << 28;
     body |= static_cast<std::uint64_t>(round & 255) << 40;
     std::uint64_t sum = (body * SONAR_MUL) & 0xFFFFull;
-    return ((body << 16) | sum) ^ key;
+    return ((body << 16) | sum) ^ SONAR_KEY;
 }
 
-inline SonarMsg unpack_sonar(std::uint64_t word, std::uint64_t key = SONAR_KEY) {
+inline SonarMsg unpack_sonar(std::uint64_t word) {
     SonarMsg message;
     message.ok = false;
     message.kind = 0;
@@ -155,7 +151,7 @@ inline SonarMsg unpack_sonar(std::uint64_t word, std::uint64_t key = SONAR_KEY) 
     message.aux = 0;
     message.id = 0;
     message.round_mod = 0;
-    std::uint64_t raw = word ^ key;
+    std::uint64_t raw = word ^ SONAR_KEY;
     std::uint64_t sum = raw & 0xFFFFull;
     std::uint64_t body = raw >> 16;
     if (((body * SONAR_MUL) & 0xFFFFull) != sum) {

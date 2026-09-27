@@ -86,10 +86,6 @@ void test_sonar() {
     expect(message.kind == logic::KIND_KING && message.x == 14 && message.y == 9, "sonar position");
     expect(message.aux == 3 && message.id == 42 && message.round_mod == (260 & 255), "sonar payload");
     expect(!logic::unpack_sonar(word ^ 1ull).ok, "tampered sonar rejected");
-    std::uint64_t team_b = logic::SONAR_KEY ^ logic::SONAR_TEAM_B;
-    std::uint64_t theirs = logic::pack_sonar(logic::KIND_KING, 14, 9, 3, 42, 260, team_b);
-    expect(logic::unpack_sonar(theirs, team_b).ok, "team B reads its own sonar");
-    expect(!logic::unpack_sonar(theirs).ok && !logic::unpack_sonar(word, team_b).ok, "teams cannot read each other");
     expect(logic::sonar_age(260, 250) == 10, "sonar age across mod 256");
     expect(logic::sonar_age(40, 40) == 0, "sonar age same round");
 }
