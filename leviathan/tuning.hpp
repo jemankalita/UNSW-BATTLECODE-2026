@@ -113,6 +113,10 @@ static constexpr int SQUEEZE_LASTS_BLIND = 2;
 // Dragons at least this long never end a move where an enemy head could
 // reach them next turn unless nothing else lives.
 static constexpr int KING_GUARD_LEN = 8;
+// From its hold round the crowned king earns this many tenths of a pearl per
+// neighbour of its new head covered by its own body (0: off). 2 went 162-138
+// against v24 locally (generated maps 66-54, ranked pool 96-84).
+static constexpr int KING_COIL = 2;
 // Room counts and the survival search treat tiles another head could reach
 // within this many moves as taken, for the first moves only ...
 static constexpr int HEAD_REACH = 2;
