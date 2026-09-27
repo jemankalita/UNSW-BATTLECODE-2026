@@ -193,6 +193,7 @@ class Brain {
     bool hold_ = true;
     int rich_pull_ = tuning::RICH_PULL;
     int bored_after_ = tuning::BORED_AFTER;
+    bool dive_ = true;            // profile: dead-end nook dives allowed
     int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
     std::vector<int> rich_field_; // blind maps: steps to the nearest tile seen spawning fast
     int rich_field_round_ = -1000;
@@ -256,6 +257,7 @@ class Brain {
         hold_ = true;
         rich_pull_ = tuning::RICH_PULL;
         bored_after_ = tuning::BORED_AFTER;
+        dive_ = true;
         for (tuning::MapProfile const& profile : tuning::MAP_PROFILES) {
             bool by_size = profile.width > 0;
             bool match = by_size ? profiled_ == nullptr && profile.width == w_ && profile.height == h_
@@ -269,6 +271,7 @@ class Brain {
             hold_ = profile.hold != 0;
             rich_pull_ = profile.rich_pull >= 0 ? profile.rich_pull : rich_pull_;
             bored_after_ = profile.bored_after >= 0 ? profile.bored_after : bored_after_;
+            dive_ = profile.dive != 0;
         }
     }
 
@@ -746,7 +749,7 @@ class Brain {
             score -= visits * tuning::BORED_PENALTY * PEARL / 10;
         }
         long long dive_score = 0;
-        if (!plan.safe && steps == 1 && !plan.portal &&
+        if (dive_ && !plan.safe && steps == 1 && !plan.portal &&
             (dive_worth(plan, dive_score) || pocket_worth(plan, dive_score))) {
             plan.safe = true;
             plan.dive = true;

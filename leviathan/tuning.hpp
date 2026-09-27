@@ -179,14 +179,15 @@ struct MapProfile {
     int hold = -1;        // 0: never hold ground near jackpots
     int rich_pull = -1;   // replaces RICH_PULL
     int bored_after = -1; // replaces BORED_AFTER (0: no anti-camping)
+    int dive = -1;        // 0: never dive into a dead-end nook
 };
 // Wins for the override vs the default, summed over every local run:
 static constexpr MapProfile MAP_PROFILES[] = {
     // Autarky, Schooltime, Trophy, Portals and Slithery Fight are not
     // baked: playing them blind beat playing them baked (Schooltime 12-0,
     // Autarky 9-3, Portals 16-4; Trophy even), so their entries match by size.
-    {"Queen Of Spades", 0, 0, 1, -1, -1},     // careful rams: 31/52; baked + anti-camping 20-4
-    {"Autarky", 54, 18, -1, 410, -1},         // feed earlier: 26/36
+    {"Queen Of Spades", 0, 0, 1, -1, -1, -1, -1, -1, 0},  // careful rams 31/52; no nook dives (ladder 13-39, 26 nook deaths a game vs 16)
+    {"Autarky", 54, 18, -1, 410, -1, -1, -1, -1, 0},     // feed earlier 26/36; no nook dives (ladder 18-30, 21 kelp deaths by r100 vs 14)
     {"Slithery Fight", 63, 27, -1, -1, 100},  // king stops splitting at 100: 23/36
     // No anti-camping where it lost (bo12: Devil 2/8, Prisoners Dilemma 0/8).
     {"Devil", 0, 0, -1, -1, -1, -1, -1, 0},
