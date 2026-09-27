@@ -88,6 +88,8 @@ static constexpr int RUSH_ROUNDS = 0;  // the rush lost 39-49 to v13
 static constexpr int RUSH_NEAR = 2;
 // ... at this many tenths of a pearl per step.
 static constexpr int RUSH_PULL = 6;
+// ... for one dragon in this many (by id / 2).
+static constexpr int RUSH_SHARE = 3;
 // Within this many steps of a rich tile a dragon holds ground: crowding is
 // ignored and ram risk counts this percent.
 static constexpr int HOLD_RADIUS = 3;
@@ -191,6 +193,7 @@ struct MapProfile {
     int bored_after = -1; // replaces BORED_AFTER (0: no anti-camping)
     int rooms = -1;       // > 0: race for small portal rooms, this many tenths of a pearl per step
     int rush = -1;        // replaces RUSH_ROUNDS: until this round every dragon heads for a rich tile
+    int dense = -1;       // > 0: room networks spawning this many tenths of a per mille pearl a round per tile pull too
 };
 // Room race (MapProfile::rooms): dragons at most ROOM_REACH steps from a
 // small portal room, and nearer to it than every ally in view, are pulled

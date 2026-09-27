@@ -263,6 +263,7 @@ class Brain {
         bored_after_ = tuning::BORED_AFTER;
         rooms_ = 0;
         rush_rounds_ = tuning::RUSH_ROUNDS;
+        int dense = 0;
         for (tuning::MapProfile const& profile : tuning::MAP_PROFILES) {
             bool by_size = profile.width > 0;
             bool match = by_size ? profiled_ == nullptr && profile.width == w_ && profile.height == h_
@@ -278,7 +279,9 @@ class Brain {
             bored_after_ = profile.bored_after >= 0 ? profile.bored_after : bored_after_;
             rooms_ = profile.rooms > 0 ? profile.rooms : 0;
             rush_rounds_ = profile.rush >= 0 ? profile.rush : rush_rounds_;
+            dense = profile.dense > 0 ? profile.dense : 0;
         }
+        map_.set_dense(dense);
     }
 
     int king_hold() const {
@@ -856,12 +859,23 @@ class Brain {
     // 40 and we starve on a third of the map), and later a dragon walled off
     // from food heads for it through portals.
     long long rich_pull(int end) {
+        // A map with dense zones (profile) rushes them, not its rich tiles,
+        // and only one dragon in RUSH_SHARE (by id): a whole team pulled into
+        // Default's centre grid ate nothing outside it and lost 1-19.
+        int dense_here = map_.dense_dist(head_);
+        int dense_there = map_.dense_dist(end);
+        bool rusher = (id_ / 2) % tuning::RUSH_SHARE == 0;
+        if (dense_here >= 0) {
+            if (round_ < rush_rounds_ && rusher && dense_there >= 0 && dense_here > tuning::RUSH_NEAR) {
+                return static_cast<long long>(dense_here - dense_there) * tuning::RUSH_PULL * PEARL / 10;
+            }
+        }
         int here = rich_distance(head_);
         int there = rich_distance(end);
         if (here < 0 || there < 0) {
             return 0;
         }
-        if (round_ < rush_rounds_ && here > tuning::RUSH_NEAR) {
+        if (dense_here < 0 && round_ < rush_rounds_ && rusher && here > tuning::RUSH_NEAR) {
             return static_cast<long long>(here - there) * tuning::RUSH_PULL * PEARL / 10;
         }
         if (here <= tuning::RICH_NEAR || !map_.starving_region(head_)) {

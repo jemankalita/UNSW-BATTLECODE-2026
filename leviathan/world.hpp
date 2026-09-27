@@ -230,6 +230,33 @@ class Map {
         return network_size_.empty() ? 0 : network_size_[static_cast<std::size_t>(cell)];
     }
 
+    // Also pull toward zones spawning at least this many tenths of a per mille
+    // pearl a round per tile (0: off). Rebuilds the field if the map is known.
+    void set_dense(int tenths) {
+        if (tenths == dense_min_) {
+            return;
+        }
+        dense_min_ = tenths;
+        if (known_ == nullptr || tenths <= 0) {
+            dense_dist_.clear();
+            return;
+        }
+        // A dense zone: a room network of at least RICH_REGION_MIN tiles that
+        // grows more pearls per tile than the open water around it (Default's
+        // 144-tile centre grid, which the teams that beat us farm from round
+        // 30 while we ate 1 pearl there by round 60).
+        dense_dist_ = distance_field([this](int i) {
+            std::size_t at = static_cast<std::size_t>(i);
+            return known_->gaps[known_->tiles[i] - 'a'].hi > 0 && network_size_[at] >= RICH_REGION_MIN &&
+                   network_rate_[at] * 10 >= dense_min_ * network_size_[at];
+        });
+    }
+
+    // Steps to the nearest dense zone; -1 when off or unknown.
+    int dense_dist(int cell) const {
+        return dense_dist_.empty() ? -1 : dense_dist_[static_cast<std::size_t>(cell)];
+    }
+
     bool same_region(int a, int b) const {
         return !region_id_.empty() && region_id_[static_cast<std::size_t>(a)] == region_id_[static_cast<std::size_t>(b)];
     }
@@ -261,6 +288,10 @@ class Map {
     std::vector<int> region_size_;      // tiles in each tile's on-foot region
     std::vector<int> region_id_;        // lowest tile index of each tile's on-foot region
     std::vector<int> network_size_;     // see living_room()
+    std::vector<int> region_rate_;      // per mille pearls a round spawned in each tile's region
+    std::vector<int> network_rate_;     // the same over its network of small regions
+    int dense_min_ = 0;                 // see set_dense()
+    std::vector<int> dense_dist_;       // steps to the nearest dense zone
 
     static constexpr signed char SLOT_NONE = -1;
     static constexpr signed char SLOT_MIXED = -2;
@@ -492,6 +523,7 @@ class Map {
         region_rich_.assign(static_cast<std::size_t>(size()), 0);
         region_field_.assign(static_cast<std::size_t>(size()), 0);
         region_size_.assign(static_cast<std::size_t>(size()), 0);
+        region_rate_.assign(static_cast<std::size_t>(size()), 0);
         region_id_.assign(static_cast<std::size_t>(size()), -1);
         std::vector<int> region(static_cast<std::size_t>(size()), -1);
         for (int start = 0; start < size(); ++start) {
@@ -532,6 +564,7 @@ class Map {
                 region_rich_[static_cast<std::size_t>(cell)] = rich || field ? 1 : 0;
                 region_field_[static_cast<std::size_t>(cell)] = field ? 1 : 0;
                 region_size_[static_cast<std::size_t>(cell)] = static_cast<int>(members.size());
+                region_rate_[static_cast<std::size_t>(cell)] = rate;
                 region_id_[static_cast<std::size_t>(cell)] = start;
             }
         }
@@ -541,6 +574,7 @@ class Map {
     // Union small regions joined by portals; big regions are not crossed.
     void link_networks() {
         network_size_ = region_size_;
+        network_rate_ = region_rate_;
         std::unordered_map<int, std::vector<int>> links;
         for (int key = 0; key < static_cast<int>(known_exits_.size()); ++key) {
             int landing = known_exits_[static_cast<std::size_t>(key)];
@@ -557,6 +591,7 @@ class Map {
             }
         }
         std::unordered_map<int, int> total;
+        std::unordered_map<int, int> total_rate;
         for (int i = 0; i < size(); ++i) {
             int r = region_id_[static_cast<std::size_t>(i)];
             if (region_size_[static_cast<std::size_t>(i)] >= RICH_REGION_MIN || total.count(r) != 0) {
@@ -565,8 +600,10 @@ class Map {
             std::vector<int> group{r};
             std::unordered_map<int, bool> seen{{r, true}};
             int sum = 0;
+            int rate = 0;
             for (std::size_t q = 0; q < group.size(); ++q) {
                 sum += region_size_[static_cast<std::size_t>(group[q])];
+                rate += region_rate_[static_cast<std::size_t>(group[q])];
                 for (int n : links[group[q]]) {
                     if (!seen[n]) {
                         seen[n] = true;
@@ -576,12 +613,14 @@ class Map {
             }
             for (int g : group) {
                 total[g] = sum;
+                total_rate[g] = rate;
             }
         }
         for (int i = 0; i < size(); ++i) {
             auto it = total.find(region_id_[static_cast<std::size_t>(i)]);
             if (it != total.end()) {
                 network_size_[static_cast<std::size_t>(i)] = it->second;
+                network_rate_[static_cast<std::size_t>(i)] = total_rate[it->first];
             }
         }
     }
