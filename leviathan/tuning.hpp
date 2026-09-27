@@ -40,6 +40,14 @@ static constexpr int CHILD_ROOM = 2;
 static constexpr int SPLIT_UNDER_THREAT = 1;
 // Map tiles per dragon when sizing the team.
 static constexpr int TILES_PER_DRAGON = 4;
+// On maps with at least BIG_MAP_TILES tiles the team stops splitting at
+// BIG_MAP_CAP dragons, so growth goes into longer dragons (64: no change).
+static constexpr int BIG_MAP_TILES = 1500;
+static constexpr int BIG_MAP_CAP = 64;
+// A dragon at least this long with no safe step turns round by splitting off
+// all but a two-segment head (0: never), when its tail has this much room.
+static constexpr int REVERSE_LEN = 0;
+static constexpr int REVERSE_ROOM = 4;
 // A dragon rams an enemy head at least this much longer (both die). 0 trades
 // evenly: the top-20 teams win by attrition, 30 head-on trades a game in the
 // first 200 rounds, most of them started by the winner.
@@ -63,6 +71,11 @@ static constexpr int ONE_WAY_INTO_CENTRE = 1;
 static constexpr int RICH_NEAR = 3;
 // ... each step closer is worth this many tenths of a pearl.
 static constexpr int RICH_PULL = 5;
+// A baked region of at least 40 tiles whose tiles spawn at least this many
+// pearls per 1000 rounds in total is a field: dragons in a starving region
+// head for it as they would for a fast tile (0: fast tiles only). Trauma's
+// middle field makes ~1090; its spawn region ~100.
+static constexpr int FIELD_RATE = 500;
 // Zone play. Until this round every dragon farther than RUSH_NEAR steps
 // from a rich tile is pulled toward one, ...
 static constexpr int RUSH_ROUNDS = 0;  // the rush lost 39-49 to v13
@@ -165,9 +178,6 @@ static constexpr MapProfile MAP_PROFILES[] = {
     {"Queen Of Spades", 0, 0, 1, -1, -1},     // careful rams: 31/52
     {"Autarky", 0, 0, -1, 410, -1},           // feed earlier: 26/36
     {"Slithery Fight", 63, 27, -1, -1, 100},  // king stops splitting at 100: 23/36
-    // No pull toward the fast corridor: the whole swarm piled into it, ate
-    // twice what top-10 teams eat there and grew half as much (36/60).
-    {"Trauma", 0, 0, -1, -1, -1, -1, 0},
 };
 
 }  // namespace tuning

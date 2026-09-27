@@ -110,6 +110,9 @@ class Brain {
         if (any_safe && try_split(ct, *best_of(plans, true))) {
             return;
         }
+        if (!any_safe && reverse(ct)) {
+            return;
+        }
         // A sprint costs a segment. 1900-rated teams sprint 0-4 times a game;
         // we sprinted 73 times in rounds 80-200 of one Devil loss, which was
         // the whole gap between their growth and our decline. A single step
@@ -1320,6 +1323,9 @@ class Brain {
     // move in hand, no enemy head close, and room for the child to move.
     bool try_split(unswbc::Controller& ct, Plan const& safe_move) {
         int cap = logic::team_cap(w_, h_, limit_, tuning::TILES_PER_DRAGON);
+        if (w_ * h_ >= tuning::BIG_MAP_TILES) {
+            cap = std::min(cap, tuning::BIG_MAP_CAP);
+        }
         if (!logic::want_split(len_, units_, cap, round_, tuning::SPLIT_LEN, tuning::SPLIT_LAST_ROUND)) {
             return false;
         }
@@ -1353,6 +1359,24 @@ class Brain {
     // turn, the body loses its rear, and the tiles behind the neck start to
     // open. Only when every move would kill us outright; a move that merely
     // looks tight is still better than handing away segments.
+    // A long dragon with no safe step turns round: it splits off all but a
+    // two-segment head, and the body leaves as a new dragon the way it came.
+    // The top teams keep dragons of 8-15 on the big maps and turn them this
+    // way constantly (a third of all their splits on Slithery Fight, 499 on
+    // Schooltime), where a long body cannot turn in one-wide water.
+    bool reverse(unswbc::Controller& ct) {
+        if (tuning::REVERSE_LEN <= 0 || len_ < tuning::REVERSE_LEN || !ct.can_split(len_ - 2)) {
+            return false;
+        }
+        if (static_cast<int>(body_.size()) < len_ || open_room(body_.back(), tuning::REVERSE_ROOM) < tuning::REVERSE_ROOM) {
+            return false;
+        }
+        ct.do_split(len_ - 2);
+        ct.set_indicator_string("reverse");
+        trail_.erase(trail_.begin(), trail_.end() - std::min<int>(static_cast<int>(trail_.size()), 2));
+        return true;
+    }
+
     bool cornered_split(unswbc::Controller& ct, std::vector<Plan> const& plans) {
         if (!ct.can_split(tuning::CHILD_SIZE)) {
             return false;
