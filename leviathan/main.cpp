@@ -159,6 +159,8 @@ class Brain {
     int n_;
     int round_ = 1;
     int len_ = 2;
+    int last_eat_round_ = 0;
+    std::vector<int> recent_;     // our head's last BORED_WINDOW tiles
     int id_ = 0;
     int units_ = 1;
     int limit_ = 64;
@@ -190,6 +192,7 @@ class Brain {
     int king_hold_round_ = -1;    // -1: KING_HOLD_ROUND
     bool hold_ = true;
     int rich_pull_ = tuning::RICH_PULL;
+    int bored_after_ = tuning::BORED_AFTER;
     int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
     std::vector<int> rich_field_; // blind maps: steps to the nearest tile seen spawning fast
     int rich_field_round_ = -1000;
@@ -204,13 +207,24 @@ class Brain {
 
     void begin_turn(unswbc::Controller& ct, unswbc::Game& game) {
         round_ = game.get_round_num();
+        int before = len_;
         len_ = ct.get_length();
+        if (len_ > before) {
+            last_eat_round_ = round_;
+        }
         id_ = ct.get_id();
         units_ = ct.get_unit_count();
         limit_ = game.get_unit_limit();
         facing_ = dir_index(ct.get_dir());
         unswbc::Position here = ct.get_position();
         head_ = map_.index(here.x, here.y);
+        if (recent_.empty()) {
+            last_eat_round_ = round_;  // a new dragon starts its clock at birth
+        }
+        recent_.push_back(head_);
+        if (static_cast<int>(recent_.size()) > tuning::BORED_WINDOW) {
+            recent_.erase(recent_.begin());
+        }
         map_.set_team_b(ct.get_team() == unswbc::Team::B);
         map_.observe(ct, round_);
         apply_profile();
@@ -241,6 +255,7 @@ class Brain {
         king_hold_round_ = -1;
         hold_ = true;
         rich_pull_ = tuning::RICH_PULL;
+        bored_after_ = tuning::BORED_AFTER;
         for (tuning::MapProfile const& profile : tuning::MAP_PROFILES) {
             bool by_size = profile.width > 0;
             bool match = by_size ? profiled_ == nullptr && profile.width == w_ && profile.height == h_
@@ -253,6 +268,7 @@ class Brain {
             king_hold_round_ = profile.king_hold_round;
             hold_ = profile.hold != 0;
             rich_pull_ = profile.rich_pull >= 0 ? profile.rich_pull : rich_pull_;
+            bored_after_ = profile.bored_after >= 0 ? profile.bored_after : bored_after_;
         }
     }
 
@@ -718,6 +734,16 @@ class Brain {
         }
         if (plan.mouth) {
             score -= MOUTH_RISK;
+        }
+        // A dragon that has not eaten for a while and keeps revisiting the
+        // same few tiles is camping: waiting for one slow tile to respawn
+        // (Schooltime's (16,13) and (43,13), every 20-50 rounds) or for a
+        // portal slot. Our dragons spent 200-300 dragon-rounds a game doing
+        // this on Default, Portals, Schooltime and Slithery Fight, the top
+        // teams 30-130. Recent tiles cost a little, so it moves on.
+        if (bored_after_ > 0 && round_ - last_eat_round_ >= bored_after_) {
+            long long visits = std::count(recent_.begin(), recent_.end(), end);
+            score -= visits * tuning::BORED_PENALTY * PEARL / 10;
         }
         long long dive_score = 0;
         if (!plan.safe && steps == 1 && !plan.portal &&
