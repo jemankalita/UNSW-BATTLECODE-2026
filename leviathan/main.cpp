@@ -194,6 +194,7 @@ class Brain {
     int rich_pull_ = tuning::RICH_PULL;
     int bored_after_ = tuning::BORED_AFTER;
     bool dive_ = true;            // profile: dead-end nook dives allowed
+    int eat_threat_ = tuning::EAT_THREAT;
     int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
     std::vector<int> rich_field_; // blind maps: steps to the nearest tile seen spawning fast
     int rich_field_round_ = -1000;
@@ -258,6 +259,7 @@ class Brain {
         rich_pull_ = tuning::RICH_PULL;
         bored_after_ = tuning::BORED_AFTER;
         dive_ = true;
+        eat_threat_ = tuning::EAT_THREAT;
         for (tuning::MapProfile const& profile : tuning::MAP_PROFILES) {
             bool by_size = profile.width > 0;
             bool match = by_size ? profiled_ == nullptr && profile.width == w_ && profile.height == h_
@@ -272,6 +274,7 @@ class Brain {
             rich_pull_ = profile.rich_pull >= 0 ? profile.rich_pull : rich_pull_;
             bored_after_ = profile.bored_after >= 0 ? profile.bored_after : bored_after_;
             dive_ = profile.dive != 0;
+            eat_threat_ = profile.eat_threat >= 0 ? profile.eat_threat : eat_threat_;
         }
     }
 
@@ -746,7 +749,7 @@ class Brain {
         if (plan.eaten > 0) {
             // A pearl in the mouth, often from a fresh corpse, is worth some
             // risk: the teams above us collect 2-5x our corpse pearls.
-            threat_share = threat_share * tuning::EAT_THREAT / 100;
+            threat_share = threat_share * eat_threat_ / 100;
         }
         score -= static_cast<long long>(threat_[static_cast<std::size_t>(end)]) * THREAT_SCALE * threat_share / 100;
         score += static_cast<long long>(std::min(plan.room, need * 2 + 8)) * ROOM_STEP;
