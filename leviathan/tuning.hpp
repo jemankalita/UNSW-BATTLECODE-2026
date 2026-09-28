@@ -176,6 +176,16 @@ static constexpr int TRICKLE_ROUND = 0;  // 260 went 49-71 on 60 generated maps,
 static constexpr int TRICKLE_RANGE = 6;
 static constexpr int TRICKLE_KING_MIN = 8;
 static constexpr int TRICKLE_KEEP = 6;
+// King gathering (0: off): from KING_PULL_LEAD rounds before the feeding,
+// every dragon that will feed walks toward the king it knows, KING_PULL/10
+// pearls per step of distance closed, so its pearls drop where the king eats
+// them (a feeder only dies if it happens to be within FEED_RANGE of the king).
+static constexpr int KING_PULL = 0;  // 8 and 20 lost 3-9 to v22 on Trauma: the king ate less
+// A feeder only dies where at least this much open water lies around it (0:
+// anywhere): the king will not enter a dead-end pocket, so pearls dropped in
+// one are never eaten (a third of ours).
+static constexpr int FEED_OPEN = 0;
+static constexpr int KING_PULL_LEAD = 40;
 // ... and this share, in percent, of the team it began with (0: no cap).
 // Feeding all but three got v7 eliminated from 19 dragons against 9 on
 // Default Small, but a 50% cap lost 6-12 to v5 locally, where every

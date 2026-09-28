@@ -186,6 +186,7 @@ class Brain {
     king::Tracker king_;
     int feed_target_ = -1;        // king's head while we walk over to feed it
     int feed_id_ = -1;            // the dragon we feed when it is one we can see (LOCAL_FEED)
+    int gather_ = -1;             // king's tile while we gather to feed it (KING_PULL)
     // Knobs the map profile may override; see tuning::MAP_PROFILES.
     mapdb::Known const* profiled_ = nullptr;
     bool profile_ready_ = false;
@@ -315,6 +316,7 @@ class Brain {
         }
         feed_target_ = -1;
         feed_id_ = -1;
+        gather_ = -1;
         bool small_map = w_ * h_ < tuning::FEED_CAP_TILES;
         int feed_round = feed_round_ >= 0 ? feed_round_ : small_map ? tuning::FEED_ROUND_SMALL : tuning::FEED_ROUND;
         if (round_ >= feed_round && feed_floor_ < 0) {
@@ -324,6 +326,7 @@ class Brain {
         if (w_ * h_ < tuning::FEED_MIN_TILES) {
             return;
         }
+        plan_gather(feed_round);
         if (!logic::feeding_time(round_, feed_round, units_, std::max(feed_floor_, tuning::FEED_KEEP))) {
             trickle_feed();
             return;
@@ -352,6 +355,29 @@ class Brain {
         if (logic::can_feed_in_time(gap, len_, round_, unswbc::Constants::MAX_ROUNDS)) {
             feed_target_ = map_.index(target.x, target.y);
         }
+    }
+
+    // Walk toward the king shortly before the feeding, so the feeders die
+    // where it can eat what they leave.
+    void plan_gather(int feed_round) {
+        king::Report const& target = king_.best();
+        if (tuning::KING_PULL <= 0 || round_ < feed_round - tuning::KING_PULL_LEAD || !target.valid ||
+            target.id == id_ || units_ <= std::max(feed_floor_, tuning::FEED_KEEP)) {
+            return;
+        }
+        int gap = logic::manhattan(cx(head_), cy(head_), target.x, target.y, w_, h_);
+        if (gap > FEED_RANGE && logic::can_feed_in_time(gap, len_, round_, unswbc::Constants::MAX_ROUNDS)) {
+            gather_ = map_.index(target.x, target.y);
+        }
+    }
+
+    long long king_pull(int end) const {
+        if (gather_ < 0) {
+            return 0;
+        }
+        int here = logic::manhattan(cx(head_), cy(head_), cx(gather_), cy(gather_), w_, h_);
+        int there = logic::manhattan(cx(end), cy(end), cx(gather_), cy(gather_), w_, h_);
+        return static_cast<long long>(here - there) * tuning::KING_PULL * PEARL / 10;
     }
 
     // Before the full feeding, a dragon feeds a king it can see nearby, so the
@@ -396,6 +422,9 @@ class Brain {
         int fx = feed_id_ >= 0 ? cx(feed_target_) : target.x;
         int fy = feed_id_ >= 0 ? cy(feed_target_) : target.y;
         if (!ally_head_seen(fed) || logic::chebyshev(cx(head_), cy(head_), fx, fy, w_, h_) > FEED_RANGE) {
+            return false;
+        }
+        if (tuning::FEED_OPEN > 0 && open_room(head_, tuning::FEED_OPEN) < tuning::FEED_OPEN) {
             return false;
         }
         ct.make_move(to_direction(logic::opposite_dir(facing_)));
@@ -791,6 +820,7 @@ class Brain {
         }
         score += rich_pull(end);
         score += room_pull(end);
+        score += king_pull(end);
         if (plan.portal) {
             score -= PORTAL_RISK;
         }
