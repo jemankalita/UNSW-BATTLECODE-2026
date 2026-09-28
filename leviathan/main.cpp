@@ -198,6 +198,7 @@ class Brain {
     bool dive_ = true;            // profile: dead-end nook dives allowed
     int eat_threat_ = tuning::EAT_THREAT;
     int contest_ = tuning::ENEMY_CONTEST;
+    int rooms_ = 0;               // room-farmer pull, tenths of a pearl per step (0: off)
     int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
     std::vector<int> rich_field_; // blind maps: steps to the nearest tile seen spawning fast
     int rich_field_round_ = -1000;
@@ -267,6 +268,7 @@ class Brain {
         dive_ = true;
         eat_threat_ = tuning::EAT_THREAT;
         contest_ = tuning::ENEMY_CONTEST;
+        rooms_ = 0;
         for (tuning::MapProfile const& profile : tuning::MAP_PROFILES) {
             bool by_size = profile.width > 0;
             bool match = by_size ? profiled_ == nullptr && profile.width == w_ && profile.height == h_
@@ -283,6 +285,7 @@ class Brain {
             dive_ = profile.dive != 0;
             eat_threat_ = profile.eat_threat >= 0 ? profile.eat_threat : eat_threat_;
             contest_ = profile.contest >= 0 ? profile.contest : contest_;
+            rooms_ = profile.rooms > 0 ? profile.rooms : 0;
         }
     }
 
@@ -787,6 +790,7 @@ class Brain {
             score -= crowding(end);
         }
         score += rich_pull(end);
+        score += room_pull(end);
         if (plan.portal) {
             score -= PORTAL_RISK;
         }
@@ -897,6 +901,28 @@ class Brain {
             return 0;
         }
         return static_cast<long long>(here - there) * rich_pull_ * PEARL / 10;
+    }
+
+    // Queen of Spades' two portal rooms grow 60% of its pearls. The ladder
+    // teams that beat us there walk into the nearer one by round 10-45 and
+    // keep about two dragons in it; racing our whole team in starved it
+    // outside. A room holds few dragons and we cannot see into one from its
+    // door, so the farmers are chosen by id: one dragon in ROOM_SHARE, which
+    // includes the first dragon of each team (ids 0 and 1).
+    bool room_farmer() const {
+        return rooms_ > 0 && (id_ / 2) % tuning::ROOM_SHARE == 0;
+    }
+
+    long long room_pull(int end) const {
+        if (!room_farmer() || map_.known() == nullptr || round_ >= tuning::ROOM_ROUNDS) {
+            return 0;
+        }
+        int here = map_.room_dist(head_);
+        int there = map_.room_dist(end);
+        if (here <= 0 || there < 0 || here > tuning::ROOM_REACH) {
+            return 0;
+        }
+        return static_cast<long long>(here - there) * rooms_ * PEARL / 10;
     }
 
     // Inside a rich zone we hold ground: packed together and trading heads
@@ -1305,8 +1331,11 @@ class Brain {
         bool dead = baked && hi <= 0;
         // A pocket too small to live in, reached only by portal (Queen of
         // Spades' 16-tile fountain rooms), is a trap: dragons that go in
-        // for its pearls jam the doorway and starve. Price it as fog.
-        if (baked && map_.living_room(cell) < world::Map::RICH_REGION_MIN && !map_.same_region(cell, head_)) {
+        // for its pearls jam the doorway and starve. Price it as fog. On a
+        // map with room farmers only the farmers see past that, and the
+        // rest, even those born inside, walk out.
+        bool small = baked && map_.living_room(cell) < world::Map::RICH_REGION_MIN;
+        if (small && (rooms_ > 0 ? !room_farmer() : !map_.same_region(cell, head_))) {
             baked = false;
             lo = 0;
             hi = 0;

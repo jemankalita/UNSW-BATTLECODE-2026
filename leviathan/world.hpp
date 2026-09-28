@@ -219,6 +219,13 @@ class Map {
     // through a big one. Queen of Spades' fountain rooms are single 16-tile
     // traps; Default's nine 16-tile rooms link to each other by portal into a
     // 194-tile network that ladder teams farm.
+    // Steps to the nearest rich tile in a room too small to live in, one
+    // entered only by portal (Queen of Spades' two 16-tile fountain rooms);
+    // 0 inside one, -1 when unknown or the map has none.
+    int room_dist(int cell) const {
+        return room_dist_.empty() ? -1 : room_dist_[static_cast<std::size_t>(cell)];
+    }
+
     int living_room(int cell) const {
         return network_size_.empty() ? 0 : network_size_[static_cast<std::size_t>(cell)];
     }
@@ -253,6 +260,7 @@ class Map {
     std::vector<int> region_size_;      // tiles in each tile's on-foot region
     std::vector<int> region_id_;        // lowest tile index of each tile's on-foot region
     std::vector<int> network_size_;     // see living_room()
+    std::vector<int> room_dist_;        // see room_dist()
 
     static constexpr signed char SLOT_NONE = -1;
     static constexpr signed char SLOT_MIXED = -2;
@@ -365,6 +373,9 @@ class Map {
         jackpot_dist_ = distance_field([this](int i) {
             mapdb::Gap const& g = known_->gaps[known_->tiles[i] - 'a'];
             return g.hi > 0 && g.hi <= JACKPOT_GAP && network_size_[static_cast<std::size_t>(i)] >= RICH_REGION_MIN;
+        });
+        room_dist_ = distance_field([this](int i) {
+            return is_rich(i) && network_size_[static_cast<std::size_t>(i)] < RICH_REGION_MIN;
         });
         if (symmetry_ < 0 && !broken_ && known_->symmetry >= 0 && possible_[known_->symmetry]) {
             for (int kind = 0; kind < logic::SYM_KINDS; ++kind) {
