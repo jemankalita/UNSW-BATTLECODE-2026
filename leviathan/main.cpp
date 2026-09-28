@@ -660,6 +660,23 @@ class Brain {
         return 0;
     }
 
+    // Neighbours of 'cell' (walking, not through portals) covered by 'body'
+    // past its neck.
+    int own_touches(int cell, std::vector<int> const& body) const {
+        int touches = 0;
+        for (int dir = 0; dir < 4; ++dir) {
+            world::Landing land = map_.step(cx(cell), cy(cell), dir, true);
+            if (!land.ok || land.portal) {
+                continue;
+            }
+            int next = map_.index(land.x, land.y);
+            if (std::find(body.begin() + std::min<std::size_t>(2, body.size()), body.end(), next) != body.end()) {
+                ++touches;
+            }
+        }
+        return touches;
+    }
+
     // Our body after the plan, head first.
     std::vector<int> body_after(Plan const& plan) const {
         std::vector<int> body(plan.cells.rbegin(), plan.cells.rend());
@@ -747,6 +764,16 @@ class Brain {
         if (bored_after_ > 0 && round_ - last_eat_round_ >= bored_after_) {
             long long visits = std::count(recent_.begin(), recent_.end(), end);
             score -= visits * tuning::BORED_PENALTY * PEARL / 10;
+        }
+        // Coiling, as in the loong series ('tactics': coil + forage beat roles
+        // 80-45; ladder 1791 vs 1739): the crowned king curls up, preferring
+        // safe steps that keep its head against its own body, so it stays
+        // compact and hard to box in.
+        if (tuning::KING_COIL > 0 && plan.safe && round_ >= king_hold()) {
+            king::Report const& crown = king_.best();
+            if (crown.valid && crown.id == id_) {
+                score += static_cast<long long>(own_touches(end, body)) * tuning::KING_COIL * PEARL / 10;
+            }
         }
         long long dive_score = 0;
         if (dive_ && !plan.safe && steps == 1 && !plan.portal &&
