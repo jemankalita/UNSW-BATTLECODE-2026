@@ -158,6 +158,7 @@ class Brain {
     int h_;
     int n_;
     int round_ = 1;
+    int born_ = -1;               // first round this dragon played; 1 for the starting dragons
     int len_ = 2;
     int last_eat_round_ = 0;
     std::vector<int> recent_;     // our head's last BORED_WINDOW tiles
@@ -184,6 +185,7 @@ class Brain {
     int deepest_ = 0;
     king::Tracker king_;
     int feed_target_ = -1;        // king's head while we walk over to feed it
+    int feed_id_ = -1;            // the dragon we feed when it is one we can see (LOCAL_FEED)
     // Knobs the map profile may override; see tuning::MAP_PROFILES.
     mapdb::Known const* profiled_ = nullptr;
     bool profile_ready_ = false;
@@ -209,6 +211,9 @@ class Brain {
 
     void begin_turn(unswbc::Controller& ct, unswbc::Game& game) {
         round_ = game.get_round_num();
+        if (born_ < 0) {
+            born_ = round_;
+        }
         int before = len_;
         len_ = ct.get_length();
         if (len_ > before) {
@@ -303,6 +308,7 @@ class Brain {
             ct.send_sonar(to_direction(dir), king_.message());
         }
         feed_target_ = -1;
+        feed_id_ = -1;
         bool small_map = w_ * h_ < tuning::FEED_CAP_TILES;
         int feed_round = feed_round_ >= 0 ? feed_round_ : small_map ? tuning::FEED_ROUND_SMALL : tuning::FEED_ROUND;
         if (round_ >= feed_round && feed_floor_ < 0) {
@@ -315,6 +321,22 @@ class Brain {
         if (!logic::feeding_time(round_, feed_round, units_, std::max(feed_floor_, tuning::FEED_KEEP))) {
             trickle_feed();
             return;
+        }
+        // Feed the longest teammate in view when it is clearly longer than us
+        // (the Abyss framework's rule): the sonar-crowned king churned between
+        // ~3 dragons at a time, so feeders split across stale or small kings.
+        if (tuning::LOCAL_FEED != 0) {
+            int best_len = len_ + tuning::LOCAL_FEED_MARGIN - 1;
+            for (Other const& other : others_) {
+                if (!other.enemy && other.len > best_len) {
+                    best_len = other.len;
+                    feed_target_ = map_.index(other.x, other.y);
+                    feed_id_ = other.id;
+                }
+            }
+            if (feed_target_ >= 0) {
+                return;
+            }
         }
         king::Report const& target = king_.best();
         if (!target.valid || target.id == id_) {
@@ -364,8 +386,10 @@ class Brain {
             return false;
         }
         king::Report const& target = king_.best();
-        if (!ally_head_seen(target.id) ||
-            logic::chebyshev(cx(head_), cy(head_), target.x, target.y, w_, h_) > FEED_RANGE) {
+        int fed = feed_id_ >= 0 ? feed_id_ : target.id;
+        int fx = feed_id_ >= 0 ? cx(feed_target_) : target.x;
+        int fy = feed_id_ >= 0 ? cy(feed_target_) : target.y;
+        if (!ally_head_seen(fed) || logic::chebyshev(cx(head_), cy(head_), fx, fy, w_, h_) > FEED_RANGE) {
             return false;
         }
         ct.make_move(to_direction(logic::opposite_dir(facing_)));
@@ -1392,6 +1416,16 @@ class Brain {
         king::Report const& crown = king_.best();
         if (round_ >= king_hold() && crown.valid && crown.id == id_) {
             return false;
+        }
+        // Growers (the Abyss framework's role): once the team is big or the
+        // game is late, the starting dragons and any long dragon keep a core
+        // that grows with the round and only bud children past it, so long
+        // dragons exist well before the feeding.
+        if (tuning::GROWERS != 0 && (units_ >= tuning::GROWER_MIN_UNITS || round_ >= tuning::GROWER_ROUND) &&
+            (born_ <= 2 || len_ >= tuning::GROWER_PROMOTE_LEN)) {
+            if (len_ < tuning::GROWER_KEEP_BASE + round_ / tuning::GROWER_KEEP_EVERY + tuning::CHILD_SIZE) {
+                return false;
+            }
         }
         // Ladder replays: the teams that beat us split whenever they can and
         // shrug off the children they lose, so only the checks that keep a
