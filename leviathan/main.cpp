@@ -306,8 +306,11 @@ class Brain {
             int share = small_map ? tuning::FEED_SHARE : 0;
             feed_floor_ = logic::feed_floor(units_, tuning::FEED_KEEP, share);
         }
-        if (w_ * h_ < tuning::FEED_MIN_TILES ||
-            !logic::feeding_time(round_, feed_round, units_, std::max(feed_floor_, tuning::FEED_KEEP))) {
+        if (w_ * h_ < tuning::FEED_MIN_TILES) {
+            return;
+        }
+        if (!logic::feeding_time(round_, feed_round, units_, std::max(feed_floor_, tuning::FEED_KEEP))) {
+            trickle_feed();
             return;
         }
         king::Report const& target = king_.best();
@@ -316,6 +319,28 @@ class Brain {
         }
         int gap = logic::manhattan(cx(head_), cy(head_), target.x, target.y, w_, h_);
         if (logic::can_feed_in_time(gap, len_, round_, unswbc::Constants::MAX_ROUNDS)) {
+            feed_target_ = map_.index(target.x, target.y);
+        }
+    }
+
+    // Before the full feeding, a dragon feeds a king it can see nearby, so the
+    // king grows steadily instead of waiting for one late burst. The top
+    // India/Australia teams lose 6-9 dragons to self-collision every 40
+    // rounds from round 200 and their king line eats 4-8 pearls per 40 rounds
+    // from round 300; ours ate about 1 until our burst at 420, and the burst's
+    // pearls mostly went to other allies.
+    void trickle_feed() {
+        if (tuning::TRICKLE_ROUND <= 0 || round_ < tuning::TRICKLE_ROUND || units_ <= tuning::TRICKLE_KEEP) {
+            return;
+        }
+        king::Report const& target = king_.best();
+        if (!target.valid || target.id == id_ || !ally_head_seen(target.id)) {
+            return;
+        }
+        if (target.len < tuning::TRICKLE_KING_MIN || target.len < len_ + 3) {
+            return;
+        }
+        if (logic::manhattan(cx(head_), cy(head_), target.x, target.y, w_, h_) <= tuning::TRICKLE_RANGE) {
             feed_target_ = map_.index(target.x, target.y);
         }
     }

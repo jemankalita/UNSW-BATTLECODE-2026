@@ -155,6 +155,14 @@ static constexpr int FEED_ROUND = 420;
 static constexpr int FEED_ROUND_SMALL = 450;
 // ... keeping this many dragons (king included) out of it ...
 static constexpr int FEED_KEEP = 3;
+// Trickle feeding before FEED_ROUND: from this round (0: off) a dragon within
+// TRICKLE_RANGE steps of a king it can see, one at least TRICKLE_KING_MIN long
+// and 3 longer than itself, feeds it while the team keeps more than
+// TRICKLE_KEEP dragons.
+static constexpr int TRICKLE_ROUND = 0;  // 260 went 49-71 on 60 generated maps, 43-37 on the pool
+static constexpr int TRICKLE_RANGE = 6;
+static constexpr int TRICKLE_KING_MIN = 8;
+static constexpr int TRICKLE_KEEP = 6;
 // ... and this share, in percent, of the team it began with (0: no cap).
 // Feeding all but three got v7 eliminated from 19 dragons against 9 on
 // Default Small, but a 50% cap lost 6-12 to v5 locally, where every
