@@ -187,7 +187,7 @@ static constexpr MapProfile MAP_PROFILES[] = {
     // baked: playing them blind beat playing them baked (Schooltime 12-0,
     // Autarky 9-3, Portals 16-4; Trophy even), so their entries match by size.
     {"Queen Of Spades", 0, 0, 1, -1, -1, -1, -1, -1, 0},  // careful rams 31/52; no nook dives (ladder 13-39, 26 nook deaths a game vs 16)
-    {"Autarky", 54, 18, -1, 410, -1, -1, -1, -1, 0},     // feed earlier 26/36; no nook dives (ladder 18-30, 21 kelp deaths by r100 vs 14)
+    {"Autarky", 54, 18, -1, 410, -1},         // feed earlier 26/36; no-dives went 4-19 on the ladder (v24) vs 18-30 with dives
     {"Slithery Fight", 63, 27, -1, -1, 100},  // king stops splitting at 100: 23/36
     // No anti-camping where it lost (bo12: Devil 2/8, Prisoners Dilemma 0/8).
     {"Devil", 0, 0, -1, -1, -1, -1, -1, 0},
