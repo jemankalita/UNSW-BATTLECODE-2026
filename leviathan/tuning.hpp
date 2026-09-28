@@ -155,6 +155,19 @@ static constexpr int FEED_ROUND = 420;
 static constexpr int FEED_ROUND_SMALL = 450;
 // ... keeping this many dragons (king included) out of it ...
 static constexpr int FEED_KEEP = 3;
+// 1: in the feeding phase feed the longest teammate in view that is at least
+// LOCAL_FEED_MARGIN longer, falling back to the sonar king when none is seen.
+static constexpr int LOCAL_FEED = 0;  // 1 went 55-65 on 60 generated maps, 39-41 on the pool
+static constexpr int LOCAL_FEED_MARGIN = 4;
+// Growers (0: off): from GROWER_ROUND, or once the team has GROWER_MIN_UNITS
+// dragons, the starting dragons and any dragon GROWER_PROMOTE_LEN long split
+// only past a core of GROWER_KEEP_BASE + round / GROWER_KEEP_EVERY segments.
+static constexpr int GROWERS = 0;  // 1 (+ LOCAL_FEED) went 51-69 on generated maps, 39-41 on the pool
+static constexpr int GROWER_ROUND = 300;
+static constexpr int GROWER_MIN_UNITS = 40;
+static constexpr int GROWER_PROMOTE_LEN = 10;
+static constexpr int GROWER_KEEP_BASE = 4;
+static constexpr int GROWER_KEEP_EVERY = 30;
 // Trickle feeding before FEED_ROUND: from this round (0: off) a dragon within
 // TRICKLE_RANGE steps of a king it can see, one at least TRICKLE_KING_MIN long
 // and 3 longer than itself, feeds it while the team keeps more than
