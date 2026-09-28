@@ -227,10 +227,10 @@ static constexpr MapProfile MAP_PROFILES[] = {
     {"Queen Of Spades", 0, 0, 1, -1, -1, -1, -1, -1, 0},
     // Trauma: ladder losses were all round-500 tiebreaks: ahead on total at
     // round 400 (80 vs 56) but our king 5.5 long vs 10.4, and feeding it then
-    // burned ~50 length for +7. The king stops splitting from round 200:
-    // vs v27 13-11, v24 17-7 (v27 12-12), v22 17-7 (v27 12-12). Round 100
-    // lost to all three (6-18, 8-16, 8-16); no feeding too (10-14, 9-15, 9-15).
-    {"Trauma", 0, 0, -1, -1, 200},
+    // burned ~50 length for +7. King hold 200 went 13-11, 17-7, 17-7 (vs
+    // v27/v24/v22) on seeds 1-12 but 36-36 on seeds 13-30 where v27 went
+    // 40-32: noise, left off. Hold 100 lost to all three (6-18, 8-16, 8-16);
+    // no feeding too (10-14, 9-15, 9-15).
     {"Autarky", 54, 18, -1, 410, -1},         // feed earlier 26/36; no-dives went 4-19 on the ladder (v24) vs 18-30 with dives
     {"Slithery Fight", 63, 27, -1, -1, 100},  // king stops splitting at 100: 23/36
     // No anti-camping where it lost (bo12: Devil 2/8, Prisoners Dilemma 0/8).
