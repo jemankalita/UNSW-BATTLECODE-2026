@@ -159,6 +159,14 @@ static constexpr int FEED_ROUND = 420;
 static constexpr int FEED_ROUND_SMALL = 450;
 // ... keeping this many dragons (king included) out of it ...
 static constexpr int FEED_KEEP = 3;
+// Trickle feeding before FEED_ROUND: from this round (0: off) a dragon within
+// TRICKLE_RANGE steps of a king it can see, one at least TRICKLE_KING_MIN long
+// and 3 longer than itself, feeds it while the team keeps more than
+// TRICKLE_KEEP dragons.
+static constexpr int TRICKLE_ROUND = 0;  // 260 went 49-71 on 60 generated maps, 43-37 on the pool
+static constexpr int TRICKLE_RANGE = 6;
+static constexpr int TRICKLE_KING_MIN = 8;
+static constexpr int TRICKLE_KEEP = 6;
 // ... and this share, in percent, of the team it began with (0: no cap).
 // Feeding all but three got v7 eliminated from 19 dragons against 9 on
 // Default Small, but a 50% cap lost 6-12 to v5 locally, where every
@@ -191,7 +199,7 @@ static constexpr MapProfile MAP_PROFILES[] = {
     // baked: playing them blind beat playing them baked (Schooltime 12-0,
     // Autarky 9-3, Portals 16-4; Trophy even), so their entries match by size.
     {"Queen Of Spades", 0, 0, 1, -1, -1, -1, -1, -1, 0},  // careful rams 31/52; no nook dives (ladder 13-39, 26 nook deaths a game vs 16)
-    {"Autarky", 54, 18, -1, 410, -1, -1, -1, -1, 0},     // feed earlier 26/36; no nook dives (ladder 18-30, 21 kelp deaths by r100 vs 14)
+    {"Autarky", 54, 18, -1, 410, -1},         // feed earlier 26/36; no-dives went 4-19 on the ladder (v24) vs 18-30 with dives
     {"Slithery Fight", 63, 27, -1, -1, 100},  // king stops splitting at 100: 23/36
     // No anti-camping where it lost (bo12: Devil 2/8, Prisoners Dilemma 0/8).
     {"Devil", 0, 0, -1, -1, -1, -1, -1, 0},
