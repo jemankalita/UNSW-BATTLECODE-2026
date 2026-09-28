@@ -197,6 +197,7 @@ class Brain {
     int bored_after_ = tuning::BORED_AFTER;
     bool dive_ = true;            // profile: dead-end nook dives allowed
     int eat_threat_ = tuning::EAT_THREAT;
+    int contest_ = tuning::ENEMY_CONTEST;
     int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
     std::vector<int> rich_field_; // blind maps: steps to the nearest tile seen spawning fast
     int rich_field_round_ = -1000;
@@ -265,6 +266,7 @@ class Brain {
         bored_after_ = tuning::BORED_AFTER;
         dive_ = true;
         eat_threat_ = tuning::EAT_THREAT;
+        contest_ = tuning::ENEMY_CONTEST;
         for (tuning::MapProfile const& profile : tuning::MAP_PROFILES) {
             bool by_size = profile.width > 0;
             bool match = by_size ? profiled_ == nullptr && profile.width == w_ && profile.height == h_
@@ -280,6 +282,7 @@ class Brain {
             bored_after_ = profile.bored_after >= 0 ? profile.bored_after : bored_after_;
             dive_ = profile.dive != 0;
             eat_threat_ = profile.eat_threat >= 0 ? profile.eat_threat : eat_threat_;
+            contest_ = profile.contest >= 0 ? profile.contest : contest_;
         }
     }
 
@@ -1353,7 +1356,7 @@ class Brain {
                 // allies; only slow tiles are worth leaving to the one who
                 // gets there first.
                 int ally_share = regrows_fast(cell) ? 100 : 30;
-                chance = chance * (other.enemy ? tuning::ENEMY_CONTEST : ally_share) / 100;
+                chance = chance * (other.enemy ? contest_ : ally_share) / 100;
             }
         }
         return gamma_[static_cast<std::size_t>(t)] * chance / 100;

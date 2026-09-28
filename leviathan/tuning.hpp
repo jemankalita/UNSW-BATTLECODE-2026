@@ -202,6 +202,7 @@ struct MapProfile {
     int bored_after = -1; // replaces BORED_AFTER (0: no anti-camping)
     int dive = -1;        // 0: never dive into a dead-end nook
     int eat_threat = -1;  // replaces EAT_THREAT: percent of ram risk counted on a step that eats
+    int contest = -1;     // replaces ENEMY_CONTEST: percent of a pearl's value left when an enemy is closer
 };
 // Wins for the override vs the default, summed over every local run:
 static constexpr MapProfile MAP_PROFILES[] = {
@@ -212,7 +213,11 @@ static constexpr MapProfile MAP_PROFILES[] = {
     // our side's early pearls than we do (19.4 vs 12.9 by round 100 in v26's
     // losses; ranked 11-25), so a pearl in the mouth counts a quarter of the risk.
     {"Default", 0, 0, -1, -1, -1, -1, -1, -1, -1, 25},
-    {"Queen Of Spades", 0, 0, 1, -1, -1, -1, -1, -1, 0},  // careful rams 31/52; no nook dives (ladder 13-39, 26 nook deaths a game vs 16)
+    // Queen of Spades: careful rams 31/52; no nook dives (ladder 13-39, 26
+    // nook deaths a game vs 16). Contest 100 (enemy-closer pearls keep full
+    // value) beat v27 46-34 and v24 43-37 but lost to v22 29-51 (v27: 43-37),
+    // net 118-122 over three opponents: left off.
+    {"Queen Of Spades", 0, 0, 1, -1, -1, -1, -1, -1, 0},
     {"Autarky", 54, 18, -1, 410, -1},         // feed earlier 26/36; no-dives went 4-19 on the ladder (v24) vs 18-30 with dives
     {"Slithery Fight", 63, 27, -1, -1, 100},  // king stops splitting at 100: 23/36
     // No anti-camping where it lost (bo12: Devil 2/8, Prisoners Dilemma 0/8).
