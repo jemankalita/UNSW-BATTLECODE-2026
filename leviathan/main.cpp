@@ -203,6 +203,8 @@ class Brain {
     int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
     std::vector<int> rich_field_; // blind maps: steps to the nearest tile seen spawning fast
     int rich_field_round_ = -1000;
+    std::vector<int> own_rich_;   // tiles we watched spawn fast (the rich field's sources)
+    std::vector<int> heard_rich_; // rich tiles allies told us about (SHARE_RICH)
     bool pending_portal_ = false;
     int portal_from_ = 0;
     int portal_dir_ = 0;
@@ -236,6 +238,7 @@ class Brain {
             recent_.erase(recent_.begin());
         }
         map_.set_team_b(ct.get_team() == unswbc::Team::B);
+        king_.set_team(ct.get_team() == unswbc::Team::B);
         map_.observe(ct, round_);
         apply_profile();
         if (pending_portal_) {
@@ -297,6 +300,7 @@ class Brain {
     void follow_king(unswbc::Controller& ct) {
         for (std::uint64_t word : ct.get_sonar_messages()) {
             king_.hear(word, round_);
+            hear_rich(word);
         }
         king_.offer(id_, cx(head_), cy(head_), len_, round_);
         for (Other const& other : others_) {
@@ -311,8 +315,9 @@ class Brain {
             king_.forget();
             king_.offer(id_, cx(head_), cy(head_), len_, round_);
         }
+        std::uint64_t news = rich_news();
         for (int dir = 0; dir < 4; ++dir) {
-            ct.send_sonar(to_direction(dir), king_.message());
+            ct.send_sonar(to_direction(dir), news != 0 ? news : king_.message());
         }
         feed_target_ = -1;
         feed_id_ = -1;
@@ -355,6 +360,39 @@ class Brain {
         if (logic::can_feed_in_time(gap, len_, round_, unswbc::Constants::MAX_ROUNDS)) {
             feed_target_ = map_.index(target.x, target.y);
         }
+    }
+
+    void hear_rich(std::uint64_t word) {
+        if (tuning::SHARE_RICH == 0) {
+            return;
+        }
+        logic::SonarMsg msg = logic::unpack_sonar(word, king_.key());
+        if (!msg.ok || msg.kind != logic::KIND_RICH || msg.x >= w_ || msg.y >= h_) {
+            return;
+        }
+        int cell = map_.index(msg.x, msg.y);
+        if (heard_rich_.size() < 16 && std::find(heard_rich_.begin(), heard_rich_.end(), cell) == heard_rich_.end() &&
+            std::find(own_rich_.begin(), own_rich_.end(), cell) == own_rich_.end()) {
+            heard_rich_.push_back(cell);
+            rich_field_round_ = -1000;  // rebuild the field with it
+        }
+    }
+
+    // On odd rounds, one rich tile we know of (ours first), in turn; 0 for none.
+    std::uint64_t rich_news() {
+        if (tuning::SHARE_RICH == 0 || (round_ & 1) == 0 || map_.known() != nullptr) {
+            return 0;
+        }
+        if (round_ - rich_field_round_ >= tuning::RICH_FIELD_EVERY || rich_field_.empty()) {
+            build_rich_field();
+        }
+        std::size_t total = own_rich_.size() + heard_rich_.size();
+        if (total == 0) {
+            return 0;
+        }
+        std::size_t pick = static_cast<std::size_t>(round_ / 2) % total;
+        int cell = pick < own_rich_.size() ? own_rich_[pick] : heard_rich_[pick - own_rich_.size()];
+        return logic::pack_sonar(logic::KIND_RICH, cx(cell), cy(cell), 0, id_, round_, king_.key());
     }
 
     // Walk toward the king shortly before the feeding, so the feeders die
@@ -892,6 +930,7 @@ class Brain {
         rich_field_round_ = round_;
         rich_field_.assign(static_cast<std::size_t>(n_), -1);
         std::vector<int> queue;
+        own_rich_.clear();
         for (int i = 0; i < n_; ++i) {
             world::Cell const& c = map_.cell(i);
             bool read = c.seen || c.timed;
@@ -899,6 +938,15 @@ class Brain {
                 c.short_reads >= tuning::BLIND_SHORT_READS) {
                 rich_field_[static_cast<std::size_t>(i)] = 0;
                 queue.push_back(i);
+                if (own_rich_.size() < 16) {
+                    own_rich_.push_back(i);
+                }
+            }
+        }
+        for (int cell : heard_rich_) {
+            if (rich_field_[static_cast<std::size_t>(cell)] < 0) {
+                rich_field_[static_cast<std::size_t>(cell)] = 0;
+                queue.push_back(cell);
             }
         }
         for (std::size_t q = 0; q < queue.size(); ++q) {
@@ -930,6 +978,10 @@ class Brain {
         }
         if (round_ < tuning::RUSH_ROUNDS && here > tuning::RUSH_NEAR) {
             return static_cast<long long>(here - there) * tuning::RUSH_PULL * PEARL / 10;
+        }
+        if (map_.known() == nullptr && tuning::BLIND_RICH_PULL > 0 && round_ < tuning::BLIND_RICH_ROUNDS &&
+            here > tuning::RICH_NEAR) {
+            return static_cast<long long>(here - there) * tuning::BLIND_RICH_PULL * PEARL / 10;
         }
         if (here <= tuning::RICH_NEAR || !map_.starving_region(head_)) {
             return 0;
@@ -1383,6 +1435,16 @@ class Brain {
         return total;
     }
 
+    // Scouts price never-seen water higher early on an unbaked map, so the
+    // swarm finds its fountains.
+    int fog_prior() const {
+        if (tuning::SCOUT_EVERY > 0 && round_ < tuning::SCOUT_ROUNDS && map_.known() == nullptr &&
+            (id_ / 2) % tuning::SCOUT_EVERY == 1) {
+            return tuning::SCOUT_FOG;
+        }
+        return tuning::FOG_PRIOR;
+    }
+
     long long tile_value(int cell, int t) const {
         world::Cell const& c = map_.cell(cell);
         int arrive = round_ + t + 1;
@@ -1402,7 +1464,7 @@ class Brain {
             lo = 0;
             hi = 0;
             if (!c.seen) {
-                return gamma_[static_cast<std::size_t>(t)] * tuning::FOG_PRIOR / 100;
+                return gamma_[static_cast<std::size_t>(t)] * fog_prior() / 100;
             }
         }
         baked = baked && tuning::KNOWN_VALUE >= 2;
@@ -1425,7 +1487,7 @@ class Brain {
             // and since then it has been as full as its spawn rate allows.
             chance = std::min(logic::gap_chance(lo, hi, arrive, 100), logic::steady_chance(lo, hi, tuning::GRAZE));
         } else {
-            chance = tuning::FOG_PRIOR;
+            chance = fog_prior();
         }
         if (feed_target_ >= 0) {
             // A feeder heads for the king and leaves the pearls near it alone.

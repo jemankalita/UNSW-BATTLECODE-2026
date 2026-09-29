@@ -152,6 +152,7 @@ def main() -> int:
     parser.add_argument("--labels", action="store_true", help="share of our turns per indicator, per 100-round phase")
     parser.add_argument("--replays", help="folder for every game's replay plus a meta.json for the replay tools")
     parser.add_argument("--seeds", type=int, default=1, help="games per map and side, each with its own engine seed")
+    parser.add_argument("--seed-start", type=int, default=0, help="first engine seed, so repeated runs can use fresh games")
     args = parser.parse_args()
 
     if args.maps:
@@ -173,7 +174,7 @@ def main() -> int:
         pathlib.Path(args.replays).mkdir(parents=True, exist_ok=True)
     jobs = []
     for map_path in maps:
-        for seed in range(args.seeds):
+        for seed in range(args.seed_start, args.seed_start + args.seeds):
             jobs.append((map_path, wasm_bot, wasm_opp, label_bot, label_opp, seed, args.replays))
             if not args.one_side:
                 jobs.append((map_path, wasm_opp, wasm_bot, label_opp, label_bot, seed, args.replays))
