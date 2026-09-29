@@ -348,7 +348,7 @@ class Brain {
             }
         }
         king::Report const& target = king_.best();
-        if (!target.valid || target.id == id_) {
+        if (!target.valid || target.id == id_ || !small_feeder(target.len)) {
             return;
         }
         int gap = logic::manhattan(cx(head_), cy(head_), target.x, target.y, w_, h_);
@@ -394,12 +394,16 @@ class Brain {
         if (!target.valid || target.id == id_ || !ally_head_seen(target.id)) {
             return;
         }
-        if (target.len < tuning::TRICKLE_KING_MIN || target.len < len_ + 3) {
+        if (target.len < tuning::TRICKLE_KING_MIN || target.len < len_ + 3 || !small_feeder(target.len)) {
             return;
         }
         if (logic::manhattan(cx(head_), cy(head_), target.x, target.y, w_, h_) <= tuning::TRICKLE_RANGE) {
             feed_target_ = map_.index(target.x, target.y);
         }
+    }
+
+    bool small_feeder(int king_len) const {
+        return tuning::FEED_MAX_PCT <= 0 || len_ * 100 <= king_len * tuning::FEED_MAX_PCT;
     }
 
     bool ally_head_seen(int id) const {

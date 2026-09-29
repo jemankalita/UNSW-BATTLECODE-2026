@@ -194,6 +194,11 @@ static constexpr int TRICKLE_ROUND = 250;  // top-10 kings eat 17 own-corpse pea
 static constexpr int TRICKLE_RANGE = 3;
 static constexpr int TRICKLE_KING_MIN = 5;
 static constexpr int TRICKLE_KEEP = 8;
+// A dragon feeds only while it is at most this percent of the king's length
+// (0: any). Ladder v28: 259 of our 8-14+ long dragons died feeding in 250
+// games; a feeder drops half its length and the king eats about a quarter
+// of that, so a 12-long feeder buys the king ~1.5 and loses the backup.
+static constexpr int FEED_MAX_PCT = 0;  // 50: 79-81 vs v28 83-77 (Schooltime 5/16 vs 9/16); FEED_KEEP 8 76-84, 6 82-78; KING_HOLD 250 68-92
 // King gathering (0: off): from KING_PULL_LEAD rounds before the feeding,
 // every dragon that will feed walks toward the king it knows, KING_PULL/10
 // pearls per step of distance closed, so its pearls drop where the king eats
