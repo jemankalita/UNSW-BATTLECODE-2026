@@ -31,7 +31,7 @@ constexpr int SPRINT_VALUE_DEPTH = 16;
 constexpr int KAMIKAZE_LEN = 5;
 constexpr int SURVIVE_DEPTH = 40;
 constexpr int SURVIVE_BUDGET = tuning::SURVIVE_NODES;
-constexpr int HEAD_REACH = 2;
+constexpr int HEAD_REACH = tuning::HEAD_REACH;
 constexpr int FEED_RANGE = 3;
 constexpr long long CROWD = PEARL / 8;
 
@@ -55,6 +55,7 @@ struct Plan {
     bool safe = false;
     bool portal = false;
     bool portal_blind = false;  // out of view, and a dragon stood there lately
+    bool off_slot = false;      // crossing outside our team's slot for it
     bool explore = false;       // through a portal whose far end we have never seen
     bool mouth = false;         // walks onto a portal mouth out of its slot
     bool dive = false;          // into a dead-end nook, to eat, split the children out and die
@@ -82,7 +83,7 @@ class Brain {
     Brain(int width, int height)
         : map_(width, height), w_(width), h_(height), n_(width * height),
           occ_(static_cast<std::size_t>(n_), -1), occ_enemy_(static_cast<std::size_t>(n_), 0),
-          threat_(static_cast<std::size_t>(n_), 0), mark_(static_cast<std::size_t>(n_), 0) {
+          threat_(static_cast<std::size_t>(n_), 0), near_(static_cast<std::size_t>(n_), 0), mark_(static_cast<std::size_t>(n_), 0) {
         long long weight = PEARL;
         for (int t = 0; t <= VALUE_DEPTH; ++t) {
             gamma_.push_back(weight);
@@ -109,13 +110,16 @@ class Brain {
         if (any_safe && try_split(ct, *best_of(plans, true))) {
             return;
         }
+        if (!any_safe && reverse(ct)) {
+            return;
+        }
         // A sprint costs a segment. 1900-rated teams sprint 0-4 times a game;
         // we sprinted 73 times in rounds 80-200 of one Devil loss, which was
         // the whole gap between their growth and our decline. A single step
         // that keeps us alive a couple of moves is worth more than a segment.
         Plan const* squeeze = best_of(plans, false);
         int squeeze_need = map_.known() != nullptr ? tuning::SQUEEZE_LASTS : tuning::SQUEEZE_LASTS_BLIND;
-        bool squeeze_lives = squeeze != nullptr && squeeze->lasts >= squeeze_need;
+        bool squeeze_lives = squeeze != nullptr && squeeze->lasts >= squeeze_need && blind_cost(*squeeze) < UNSAFE;
         if (!any_safe && squeeze_lives && best_ram(plans, true) == nullptr) {
             commit(ct, *squeeze, "squeeze");
             return;
@@ -154,7 +158,10 @@ class Brain {
     int h_;
     int n_;
     int round_ = 1;
+    int born_ = -1;               // first round this dragon played; 1 for the starting dragons
     int len_ = 2;
+    int last_eat_round_ = 0;
+    std::vector<int> recent_;     // our head's last BORED_WINDOW tiles
     int id_ = 0;
     int units_ = 1;
     int limit_ = 64;
@@ -168,6 +175,7 @@ class Brain {
     std::vector<Other> others_;
     std::vector<int> threat_;     // cost of ending a move on each tile
     std::vector<int> threat_list_;
+    std::vector<char> near_;      // an enemy head reaches it with a single step
     std::vector<int> mark_;
     int stamp_ = 0;
     std::vector<long long> gamma_;
@@ -177,6 +185,21 @@ class Brain {
     int deepest_ = 0;
     king::Tracker king_;
     int feed_target_ = -1;        // king's head while we walk over to feed it
+    int feed_id_ = -1;            // the dragon we feed when it is one we can see (LOCAL_FEED)
+    int gather_ = -1;             // king's tile while we gather to feed it (KING_PULL)
+    // Knobs the map profile may override; see tuning::MAP_PROFILES.
+    mapdb::Known const* profiled_ = nullptr;
+    bool profile_ready_ = false;
+    int ram_margin_ = tuning::RAM_MARGIN;
+    int feed_round_ = -1;         // -1: FEED_ROUND / FEED_ROUND_SMALL by map size
+    int king_hold_round_ = -1;    // -1: KING_HOLD_ROUND
+    bool hold_ = true;
+    int rich_pull_ = tuning::RICH_PULL;
+    int bored_after_ = tuning::BORED_AFTER;
+    bool dive_ = true;            // profile: dead-end nook dives allowed
+    int eat_threat_ = tuning::EAT_THREAT;
+    int contest_ = tuning::ENEMY_CONTEST;
+    int rooms_ = 0;               // room-farmer pull, tenths of a pearl per step (0: off)
     int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
     std::vector<int> rich_field_; // blind maps: steps to the nearest tile seen spawning fast
     int rich_field_round_ = -1000;
@@ -191,15 +214,30 @@ class Brain {
 
     void begin_turn(unswbc::Controller& ct, unswbc::Game& game) {
         round_ = game.get_round_num();
+        if (born_ < 0) {
+            born_ = round_;
+        }
+        int before = len_;
         len_ = ct.get_length();
+        if (len_ > before) {
+            last_eat_round_ = round_;
+        }
         id_ = ct.get_id();
         units_ = ct.get_unit_count();
         limit_ = game.get_unit_limit();
         facing_ = dir_index(ct.get_dir());
         unswbc::Position here = ct.get_position();
         head_ = map_.index(here.x, here.y);
+        if (recent_.empty()) {
+            last_eat_round_ = round_;  // a new dragon starts its clock at birth
+        }
+        recent_.push_back(head_);
+        if (static_cast<int>(recent_.size()) > tuning::BORED_WINDOW) {
+            recent_.erase(recent_.begin());
+        }
         map_.set_team_b(ct.get_team() == unswbc::Team::B);
         map_.observe(ct, round_);
+        apply_profile();
         if (pending_portal_) {
             map_.learn_exit(cx(portal_from_), cy(portal_from_), portal_dir_, here.x, here.y);
             pending_portal_ = false;
@@ -211,6 +249,50 @@ class Brain {
     }
 
     // ---- the king ------------------------------------------------------------
+
+    // Once the baked map is recognised, switch to its profile. Unknown maps
+    // (a new tournament map) keep the defaults, which are tuned for them.
+    // A pool map we do not bake (it played better blind) is matched by its
+    // size instead, while no baked map has been recognised.
+    void apply_profile() {
+        if (profile_ready_ && map_.known() == profiled_) {
+            return;
+        }
+        profile_ready_ = true;
+        profiled_ = map_.known();
+        ram_margin_ = tuning::RAM_MARGIN;
+        feed_round_ = -1;
+        king_hold_round_ = -1;
+        hold_ = true;
+        rich_pull_ = tuning::RICH_PULL;
+        bored_after_ = tuning::BORED_AFTER;
+        dive_ = true;
+        eat_threat_ = tuning::EAT_THREAT;
+        contest_ = tuning::ENEMY_CONTEST;
+        rooms_ = 0;
+        for (tuning::MapProfile const& profile : tuning::MAP_PROFILES) {
+            bool by_size = profile.width > 0;
+            bool match = by_size ? profiled_ == nullptr && profile.width == w_ && profile.height == h_
+                                 : profiled_ != nullptr && std::string(profile.name) == profiled_->name;
+            if (!match) {
+                continue;
+            }
+            ram_margin_ = profile.ram_margin >= 0 ? profile.ram_margin : ram_margin_;
+            feed_round_ = profile.feed_round;
+            king_hold_round_ = profile.king_hold_round;
+            hold_ = profile.hold != 0;
+            rich_pull_ = profile.rich_pull >= 0 ? profile.rich_pull : rich_pull_;
+            bored_after_ = profile.bored_after >= 0 ? profile.bored_after : bored_after_;
+            dive_ = profile.dive != 0;
+            eat_threat_ = profile.eat_threat >= 0 ? profile.eat_threat : eat_threat_;
+            contest_ = profile.contest >= 0 ? profile.contest : contest_;
+            rooms_ = profile.rooms > 0 ? profile.rooms : 0;
+        }
+    }
+
+    int king_hold() const {
+        return king_hold_round_ >= 0 ? king_hold_round_ : tuning::KING_HOLD_ROUND;
+    }
 
     void follow_king(unswbc::Controller& ct) {
         for (std::uint64_t word : ct.get_sonar_messages()) {
@@ -233,15 +315,37 @@ class Brain {
             ct.send_sonar(to_direction(dir), king_.message());
         }
         feed_target_ = -1;
+        feed_id_ = -1;
+        gather_ = -1;
         bool small_map = w_ * h_ < tuning::FEED_CAP_TILES;
-        int feed_round = small_map ? tuning::FEED_ROUND_SMALL : tuning::FEED_ROUND;
+        int feed_round = feed_round_ >= 0 ? feed_round_ : small_map ? tuning::FEED_ROUND_SMALL : tuning::FEED_ROUND;
         if (round_ >= feed_round && feed_floor_ < 0) {
             int share = small_map ? tuning::FEED_SHARE : 0;
             feed_floor_ = logic::feed_floor(units_, tuning::FEED_KEEP, share);
         }
-        if (w_ * h_ < tuning::FEED_MIN_TILES ||
-            !logic::feeding_time(round_, feed_round, units_, std::max(feed_floor_, tuning::FEED_KEEP))) {
+        if (w_ * h_ < tuning::FEED_MIN_TILES) {
             return;
+        }
+        plan_gather(feed_round);
+        if (!logic::feeding_time(round_, feed_round, units_, std::max(feed_floor_, tuning::FEED_KEEP))) {
+            trickle_feed();
+            return;
+        }
+        // Feed the longest teammate in view when it is clearly longer than us
+        // (the Abyss framework's rule): the sonar-crowned king churned between
+        // ~3 dragons at a time, so feeders split across stale or small kings.
+        if (tuning::LOCAL_FEED != 0) {
+            int best_len = len_ + tuning::LOCAL_FEED_MARGIN - 1;
+            for (Other const& other : others_) {
+                if (!other.enemy && other.len > best_len) {
+                    best_len = other.len;
+                    feed_target_ = map_.index(other.x, other.y);
+                    feed_id_ = other.id;
+                }
+            }
+            if (feed_target_ >= 0) {
+                return;
+            }
         }
         king::Report const& target = king_.best();
         if (!target.valid || target.id == id_) {
@@ -249,6 +353,51 @@ class Brain {
         }
         int gap = logic::manhattan(cx(head_), cy(head_), target.x, target.y, w_, h_);
         if (logic::can_feed_in_time(gap, len_, round_, unswbc::Constants::MAX_ROUNDS)) {
+            feed_target_ = map_.index(target.x, target.y);
+        }
+    }
+
+    // Walk toward the king shortly before the feeding, so the feeders die
+    // where it can eat what they leave.
+    void plan_gather(int feed_round) {
+        king::Report const& target = king_.best();
+        if (tuning::KING_PULL <= 0 || round_ < feed_round - tuning::KING_PULL_LEAD || !target.valid ||
+            target.id == id_ || units_ <= std::max(feed_floor_, tuning::FEED_KEEP)) {
+            return;
+        }
+        int gap = logic::manhattan(cx(head_), cy(head_), target.x, target.y, w_, h_);
+        if (gap > FEED_RANGE && logic::can_feed_in_time(gap, len_, round_, unswbc::Constants::MAX_ROUNDS)) {
+            gather_ = map_.index(target.x, target.y);
+        }
+    }
+
+    long long king_pull(int end) const {
+        if (gather_ < 0) {
+            return 0;
+        }
+        int here = logic::manhattan(cx(head_), cy(head_), cx(gather_), cy(gather_), w_, h_);
+        int there = logic::manhattan(cx(end), cy(end), cx(gather_), cy(gather_), w_, h_);
+        return static_cast<long long>(here - there) * tuning::KING_PULL * PEARL / 10;
+    }
+
+    // Before the full feeding, a dragon feeds a king it can see nearby, so the
+    // king grows steadily instead of waiting for one late burst. The top
+    // India/Australia teams lose 6-9 dragons to self-collision every 40
+    // rounds from round 200 and their king line eats 4-8 pearls per 40 rounds
+    // from round 300; ours ate about 1 until our burst at 420, and the burst's
+    // pearls mostly went to other allies.
+    void trickle_feed() {
+        if (tuning::TRICKLE_ROUND <= 0 || round_ < tuning::TRICKLE_ROUND || units_ <= tuning::TRICKLE_KEEP) {
+            return;
+        }
+        king::Report const& target = king_.best();
+        if (!target.valid || target.id == id_ || !ally_head_seen(target.id)) {
+            return;
+        }
+        if (target.len < tuning::TRICKLE_KING_MIN || target.len < len_ + 3) {
+            return;
+        }
+        if (logic::manhattan(cx(head_), cy(head_), target.x, target.y, w_, h_) <= tuning::TRICKLE_RANGE) {
             feed_target_ = map_.index(target.x, target.y);
         }
     }
@@ -269,8 +418,13 @@ class Brain {
             return false;
         }
         king::Report const& target = king_.best();
-        if (!ally_head_seen(target.id) ||
-            logic::chebyshev(cx(head_), cy(head_), target.x, target.y, w_, h_) > FEED_RANGE) {
+        int fed = feed_id_ >= 0 ? feed_id_ : target.id;
+        int fx = feed_id_ >= 0 ? cx(feed_target_) : target.x;
+        int fy = feed_id_ >= 0 ? cy(feed_target_) : target.y;
+        if (!ally_head_seen(fed) || logic::chebyshev(cx(head_), cy(head_), fx, fy, w_, h_) > FEED_RANGE) {
+            return false;
+        }
+        if (tuning::FEED_OPEN > 0 && open_room(head_, tuning::FEED_OPEN) < tuning::FEED_OPEN) {
             return false;
         }
         ct.make_move(to_direction(logic::opposite_dir(facing_)));
@@ -391,6 +545,7 @@ class Brain {
     void map_threats() {
         for (int cell : threat_list_) {
             threat_[static_cast<std::size_t>(cell)] = 0;
+            near_[static_cast<std::size_t>(cell)] = 0;
         }
         threat_list_.clear();
         for (Other const& other : others_) {
@@ -411,12 +566,15 @@ class Brain {
                         if (occ_[static_cast<std::size_t>(to)] >= 0 && to != head_) {
                             continue;
                         }
-                        int cost = logic::ram_threat(len_, other.len, units_, reach, tuning::RAM_MARGIN);
+                        int cost = logic::ram_threat(len_, other.len, units_, reach, ram_margin_);
                         if (cost > threat_[static_cast<std::size_t>(to)]) {
                             if (threat_[static_cast<std::size_t>(to)] == 0) {
                                 threat_list_.push_back(to);
                             }
                             threat_[static_cast<std::size_t>(to)] = cost;
+                        }
+                        if (reach == 1 && cost > 0) {
+                            near_[static_cast<std::size_t>(to)] = 1;
                         }
                         next.push_back(to);
                     }
@@ -480,6 +638,7 @@ class Brain {
             next.portal = next.portal || land.portal;
             if (land.portal && (blind_landing(cell) || !map_.crossing_allowed(from, cell, round_))) {
                 next.portal_blind = true;
+                next.off_slot = next.off_slot || !map_.crossing_allowed(from, cell, round_);
             }
             if (!land.portal && map_.mouth_risk(cell, round_)) {
                 next.mouth = true;
@@ -499,6 +658,23 @@ class Brain {
 
     // We cannot see through a portal. If a dragon stood on the far tile or
     // right beside it lately, it may still be there, or step onto us.
+    // What a crossing we cannot see through costs once no move is safe.
+    // Off our slot, an ally may be crossing the other way onto our head;
+    // otherwise the risk is a dragon seen near the landing lately. A dragon
+    // trapped in a small room joined to the rest only by portals (Default's
+    // 16-tile rooms) has to take its chance off-slot; elsewhere (Stronghold,
+    // Trauma, any unknown map) it waits for its slot.
+    long long blind_cost(Plan const& plan) const {
+        if (!plan.portal_blind) {
+            return 0;
+        }
+        int region = map_.region_size(head_);
+        bool trapped = region > 0 && region <= tuning::TRAPPED_ROOM;
+        int pearls = !plan.off_slot ? tuning::BLIND_LANDING_PEARLS
+                                    : trapped ? tuning::OFF_SLOT_TRAPPED_PEARLS : tuning::OFF_SLOT_PEARLS;
+        return pearls >= tuning::AS_UNSAFE ? UNSAFE : static_cast<long long>(pearls) * PEARL;
+    }
+
     bool blind_landing(int cell) const {
         if (map_.cell(cell).seen_round == round_) {
             return false;
@@ -609,6 +785,15 @@ class Brain {
         // We cannot see through a portal. A far tile we saw a dragon on
         // lately may still hold one, so that crossing is a last resort.
         plan.safe = plan.room >= need + pearls && lives && !plan.portal_blind;
+        // A long dragon is what wins the round-500 tiebreak, and a short enemy
+        // gladly trades itself for it: on the ladder a length-3 dragon rammed
+        // our length-21 king at round 492 and turned a won game into a loss.
+        // Ending a step from an enemy head is a last resort. Only a step: a
+        // berth that also shuns sprint reach makes the champion too timid to
+        // hold ground (the loong series measured a wider berth as a loss).
+        if (len_ >= tuning::KING_GUARD_LEN && near_[static_cast<std::size_t>(plan.cells.back())] != 0) {
+            plan.safe = false;
+        }
         int end = plan.cells.back();
         long long score = value_from(body, plan.length, steps > 1 ? SPRINT_VALUE_DEPTH : VALUE_DEPTH) -
                           static_cast<long long>(steps - 1) * PEARL;
@@ -618,11 +803,12 @@ class Brain {
             }
         }
         bool hold = holding();
-        int threat_share = hold ? tuning::HOLD_THREAT : 100;
+        bool guarded = len_ >= tuning::KING_GUARD_LEN;
+        int threat_share = hold && !guarded ? tuning::HOLD_THREAT : 100;
         if (plan.eaten > 0) {
             // A pearl in the mouth, often from a fresh corpse, is worth some
             // risk: the teams above us collect 2-5x our corpse pearls.
-            threat_share = threat_share * tuning::EAT_THREAT / 100;
+            threat_share = threat_share * eat_threat_ / 100;
         }
         score -= static_cast<long long>(threat_[static_cast<std::size_t>(end)]) * THREAT_SCALE * threat_share / 100;
         score += static_cast<long long>(std::min(plan.room, need * 2 + 8)) * ROOM_STEP;
@@ -630,17 +816,29 @@ class Brain {
             score += STRAIGHT;
         }
         if (!hold) {
-            score -= crowding(end);
+            score -= crowding(end) * tuning::CROWD_PCT / 100;
         }
         score += rich_pull(end);
+        score += room_pull(end);
+        score += king_pull(end);
         if (plan.portal) {
             score -= PORTAL_RISK;
         }
         if (plan.mouth) {
             score -= MOUTH_RISK;
         }
+        // A dragon that has not eaten for a while and keeps revisiting the
+        // same few tiles is camping: waiting for one slow tile to respawn
+        // (Schooltime's (16,13) and (43,13), every 20-50 rounds) or for a
+        // portal slot. Our dragons spent 200-300 dragon-rounds a game doing
+        // this on Default, Portals, Schooltime and Slithery Fight, the top
+        // teams 30-130. Recent tiles cost a little, so it moves on.
+        if (bored_after_ > 0 && round_ - last_eat_round_ >= bored_after_) {
+            long long visits = std::count(recent_.begin(), recent_.end(), end);
+            score -= visits * tuning::BORED_PENALTY * PEARL / 10;
+        }
         long long dive_score = 0;
-        if (!plan.safe && steps == 1 && !plan.portal &&
+        if (dive_ && !plan.safe && steps == 1 && !plan.portal &&
             (dive_worth(plan, dive_score) || pocket_worth(plan, dive_score))) {
             plan.safe = true;
             plan.dive = true;
@@ -651,6 +849,14 @@ class Brain {
         if (!plan.safe) {
             score = -UNSAFE + static_cast<long long>(plan.lasts) * PEARL +
                     static_cast<long long>(plan.room) * PEARL / 10 + score / 1000;
+            // Out of safe moves, a crossing off its slot or a step onto a
+            // portal mouth still kills an ally we cannot see: on Trauma the
+            // ladder showed 15-27 of our own head-ons a game, all squeezes
+            // through the (16,7)/(10,0) portal. Those go last.
+            score -= blind_cost(plan);
+            if (plan.mouth) {
+                score -= MOUTH_RISK;
+            }
         }
         plan.score = score;
     }
@@ -724,12 +930,37 @@ class Brain {
         if (here <= tuning::RICH_NEAR || !map_.starving_region(head_)) {
             return 0;
         }
-        return static_cast<long long>(here - there) * tuning::RICH_PULL * PEARL / 10;
+        return static_cast<long long>(here - there) * rich_pull_ * PEARL / 10;
+    }
+
+    // Queen of Spades' two portal rooms grow 60% of its pearls. The ladder
+    // teams that beat us there walk into the nearer one by round 10-45 and
+    // keep about two dragons in it; racing our whole team in starved it
+    // outside. A room holds few dragons and we cannot see into one from its
+    // door, so the farmers are chosen by id: one dragon in ROOM_SHARE, which
+    // includes the first dragon of each team (ids 0 and 1).
+    bool room_farmer() const {
+        return rooms_ > 0 && (id_ / 2) % tuning::ROOM_SHARE == 0;
+    }
+
+    long long room_pull(int end) const {
+        if (!room_farmer() || map_.known() == nullptr || round_ >= tuning::ROOM_ROUNDS) {
+            return 0;
+        }
+        int here = map_.room_dist(head_);
+        int there = map_.room_dist(end);
+        if (here <= 0 || there < 0 || here > tuning::ROOM_REACH) {
+            return 0;
+        }
+        return static_cast<long long>(here - there) * rooms_ * PEARL / 10;
     }
 
     // Inside a rich zone we hold ground: packed together and trading heads
     // is how the zone is kept, so crowding and ram risk count for less.
     bool holding() {
+        if (!hold_) {
+            return false;
+        }
         // Only on a baked map: on unknown maps (random test maps, the
         // sprint's new map) holding tested worse, 15-21 against 21-15.
         if (map_.known() == nullptr) {
@@ -755,7 +986,7 @@ class Brain {
             return false;
         }
         king::Report const& crown = king_.best();
-        if (round_ >= tuning::KING_HOLD_ROUND && crown.valid && crown.id == id_) {
+        if (round_ >= king_hold() && crown.valid && crown.id == id_) {
             return false;
         }
         int entry = plan.cells.back();
@@ -820,12 +1051,17 @@ class Brain {
     // pearls feed the next diver. Worth it when the pearls in view will make
     // us long enough to split at least once. Only static nooks count: every
     // tile past the first step has exactly one way on, by the map's edges.
+    bool harvester() const {
+        return tuning::HARVEST_LEN > 0 && len_ >= tuning::HARVEST_LEN;
+    }
+
     bool dive_worth(Plan const& plan, long long& score) {
-        if (round_ > tuning::SPLIT_LAST_ROUND || len_ > tuning::DIVE_MAX_LEN) {
+        bool harvest = harvester();
+        if (round_ > tuning::SPLIT_LAST_ROUND || (len_ > tuning::DIVE_MAX_LEN && !harvest)) {
             return false;
         }
         king::Report const& crown = king_.best();
-        if (round_ >= tuning::KING_HOLD_ROUND && crown.valid && crown.id == id_) {
+        if (round_ >= king_hold() && crown.valid && crown.id == id_) {
             return false;
         }
         std::vector<int> body = body_after(plan);
@@ -870,6 +1106,9 @@ class Brain {
         if (!dead_end) {
             return false;
         }
+        if (harvest) {
+            return harvest_worth(body, eaten, score);
+        }
         int children = std::min((length - 2) / tuning::CHILD_SIZE, limit_ - units_);
         if (children < 1) {
             return false;
@@ -897,6 +1136,26 @@ class Brain {
             return false;
         }
         score = static_cast<long long>(eaten) * PEARL + static_cast<long long>(children) * tuning::DIVE_CHILD * PEARL;
+        return true;
+    }
+
+    // A long dragon's dive: it keeps all but two segments by turning round
+    // at the dead end, so its tail must still be outside with a free tile
+    // to leave by, and a new dragon must fit under the unit limit.
+    bool harvest_worth(std::vector<int> const& body, int eaten, long long& score) {
+        if (eaten < tuning::HARVEST_MIN_EAT || units_ >= limit_) {
+            return false;
+        }
+        int tail = body.back();
+        if (open_room(tail, tuning::REVERSE_ROOM) < tuning::REVERSE_ROOM) {
+            return false;
+        }
+        for (Other const& other : others_) {
+            if (other.enemy && logic::manhattan(cx(tail), cy(tail), other.x, other.y, w_, h_) <= 3) {
+                return false;
+            }
+        }
+        score = static_cast<long long>(eaten + tuning::HARVEST_BONUS) * PEARL;
         return true;
     }
 
@@ -1075,6 +1334,9 @@ class Brain {
     // further out the guess is too loose to rule tiles out.
     bool head_can_reach(int cell, int moves) const {
         for (Other const& other : others_) {
+            if (!other.enemy && tuning::HEAD_REACH_ALLIES == 0) {
+                continue;
+            }
             if (logic::manhattan(cx(cell), cy(cell), other.x, other.y, w_, h_) <= moves) {
                 return true;
             }
@@ -1127,8 +1389,11 @@ class Brain {
         bool dead = baked && hi <= 0;
         // A pocket too small to live in, reached only by portal (Queen of
         // Spades' 16-tile fountain rooms), is a trap: dragons that go in
-        // for its pearls jam the doorway and starve. Price it as fog.
-        if (baked && map_.living_room(cell) < world::Map::RICH_REGION_MIN && !map_.same_region(cell, head_)) {
+        // for its pearls jam the doorway and starve. Price it as fog. On a
+        // map with room farmers only the farmers see past that, and the
+        // rest, even those born inside, walk out.
+        bool small = baked && map_.living_room(cell) < world::Map::RICH_REGION_MIN;
+        if (small && (rooms_ > 0 ? !room_farmer() : !map_.same_region(cell, head_))) {
             baked = false;
             lo = 0;
             hi = 0;
@@ -1178,7 +1443,7 @@ class Brain {
                 // allies; only slow tiles are worth leaving to the one who
                 // gets there first.
                 int ally_share = regrows_fast(cell) ? 100 : 30;
-                chance = chance * (other.enemy ? tuning::ENEMY_CONTEST : ally_share) / 100;
+                chance = chance * (other.enemy ? contest_ : ally_share) / 100;
             }
         }
         return gamma_[static_cast<std::size_t>(t)] * chance / 100;
@@ -1191,7 +1456,7 @@ class Brain {
             return 0;
         }
         int theirs = enemy_len_at(cell);
-        if (!logic::worth_ram(len_, theirs, units_, false, tuning::RAM_MARGIN)) {
+        if (!logic::worth_ram(len_, theirs, units_, false, ram_margin_)) {
             return 0;
         }
         return gamma_[static_cast<std::size_t>(t)] * (100 + 10 * theirs) / 100;
@@ -1215,7 +1480,7 @@ class Brain {
     Plan const* best_ram(std::vector<Plan> const& plans, bool cornered) const {
         Plan const* best = nullptr;
         for (Plan const& plan : plans) {
-            if (plan.ram_len <= 0 || !logic::worth_ram(len_, plan.ram_len, units_, cornered, tuning::RAM_MARGIN)) {
+            if (plan.ram_len <= 0 || !logic::worth_ram(len_, plan.ram_len, units_, cornered, ram_margin_)) {
                 continue;
             }
             if (best == nullptr || plan.ram_len > best->ram_len) {
@@ -1229,15 +1494,32 @@ class Brain {
     // move in hand, no enemy head close, and room for the child to move.
     bool try_split(unswbc::Controller& ct, Plan const& safe_move) {
         int cap = logic::team_cap(w_, h_, limit_, tuning::TILES_PER_DRAGON);
+        if (w_ * h_ >= tuning::BIG_MAP_TILES) {
+            cap = std::min(cap, tuning::BIG_MAP_CAP);
+        }
         if (!logic::want_split(len_, units_, cap, round_, tuning::SPLIT_LEN, tuning::SPLIT_LAST_ROUND)) {
             return false;
         }
         if (!ct.can_split(tuning::CHILD_SIZE) || (!tuning::SPLIT_UNDER_THREAT && threat_[static_cast<std::size_t>(head_)] > 0)) {
             return false;
         }
-        king::Report const& crown = king_.best();
-        if (round_ >= tuning::KING_HOLD_ROUND && crown.valid && crown.id == id_) {
+        if (tuning::HARVEST_KEEP != 0 && tuning::HARVEST_LEN > 0 &&
+            len_ - tuning::CHILD_SIZE < tuning::HARVEST_LEN && len_ >= tuning::HARVEST_LEN) {
             return false;
+        }
+        king::Report const& crown = king_.best();
+        if (round_ >= king_hold() && crown.valid && crown.id == id_) {
+            return false;
+        }
+        // Growers (the Abyss framework's role): once the team is big or the
+        // game is late, the starting dragons and any long dragon keep a core
+        // that grows with the round and only bud children past it, so long
+        // dragons exist well before the feeding.
+        if (tuning::GROWERS != 0 && (units_ >= tuning::GROWER_MIN_UNITS || round_ >= tuning::GROWER_ROUND) &&
+            (born_ <= 2 || len_ >= tuning::GROWER_PROMOTE_LEN)) {
+            if (len_ < tuning::GROWER_KEEP_BASE + round_ / tuning::GROWER_KEEP_EVERY + tuning::CHILD_SIZE) {
+                return false;
+            }
         }
         // Ladder replays: the teams that beat us split whenever they can and
         // shrug off the children they lose, so only the checks that keep a
@@ -1262,6 +1544,30 @@ class Brain {
     // turn, the body loses its rear, and the tiles behind the neck start to
     // open. Only when every move would kill us outright; a move that merely
     // looks tight is still better than handing away segments.
+    // A long dragon with no safe step turns round: it splits off all but a
+    // two-segment head, and the body leaves as a new dragon the way it came.
+    // The top teams keep dragons of 8-15 on the big maps and turn them this
+    // way constantly (a third of all their splits on Slithery Fight, 499 on
+    // Schooltime), where a long body cannot turn in one-wide water.
+    bool reverse(unswbc::Controller& ct) {
+        bool enabled = (tuning::REVERSE_LEN > 0 && len_ >= tuning::REVERSE_LEN) || harvester();
+        if (!enabled || !ct.can_split(len_ - 2)) {
+            return false;
+        }
+        bool tail_known = static_cast<int>(body_.size()) >= len_;
+        if (!tail_known && !harvester()) {
+            return false;
+        }
+        // A harvester's tail may be out of view; it left open water there.
+        if (tail_known && open_room(body_.back(), tuning::REVERSE_ROOM) < tuning::REVERSE_ROOM) {
+            return false;
+        }
+        ct.do_split(len_ - 2);
+        ct.set_indicator_string("reverse");
+        trail_.erase(trail_.begin(), trail_.end() - std::min<int>(static_cast<int>(trail_.size()), 2));
+        return true;
+    }
+
     bool cornered_split(unswbc::Controller& ct, std::vector<Plan> const& plans) {
         if (!ct.can_split(tuning::CHILD_SIZE)) {
             return false;

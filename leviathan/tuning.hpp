@@ -40,8 +40,42 @@ static constexpr int CHILD_ROOM = 2;
 static constexpr int SPLIT_UNDER_THREAT = 1;
 // Map tiles per dragon when sizing the team.
 static constexpr int TILES_PER_DRAGON = 4;
-// A short dragon rams an enemy head at least this much longer (both die).
-static constexpr int RAM_MARGIN = 1;
+// On maps with at least BIG_MAP_TILES tiles the team stops splitting at
+// BIG_MAP_CAP dragons, so growth goes into longer dragons (64: no change).
+static constexpr int BIG_MAP_TILES = 1500;
+static constexpr int BIG_MAP_CAP = 64;
+// A dragon at least this long with no safe step turns round by splitting off
+// all but a two-segment head (0: never), when its tail has this much room.
+static constexpr int REVERSE_LEN = 0;
+static constexpr int REVERSE_ROOM = 4;
+// Harvest dives (0: off): a dragon at least HARVEST_LEN long may run into a
+// dead-end pocket for at least HARVEST_MIN_EAT pearls when its tail stays
+// outside it, then turn round there (splitting off all but a two-segment
+// head, which dies in the pocket and leaves a pearl for the next pass). The
+// top teams farm Autarky's fountain nooks this way with their 14-long
+// starting dragons every 7-8 rounds: 149 pearls from the middle by round 300
+// against our 83.
+static constexpr int HARVEST_LEN = 0;
+static constexpr int HARVEST_MIN_EAT = 2;
+static constexpr int HARVEST_BONUS = 2;  // pearls' worth for keeping the body
+// 1: a dragon at least HARVEST_LEN long keeps that many segments and only buds
+// children off the rest, so harvesters exist (ours split to length 2 by
+// round 5).
+static constexpr int HARVEST_KEEP = 0;
+// Percent of the crowding cost (ally heads and bodies near the step's end).
+// Top-10 teams have an ally head within 2 on 22-38% of their turns on
+// Autarky/Trophy/Portals, we on 5-21%, and they eat from more tiles.
+static constexpr int CROWD_PCT = 100;
+// Anti-camping: after BORED_AFTER rounds without eating, ending a move on a
+// tile among our head's last BORED_WINDOW tiles costs BORED_PENALTY tenths
+// of a pearl per visit (0: off).
+static constexpr int BORED_AFTER = 12;
+static constexpr int BORED_WINDOW = 16;
+static constexpr int BORED_PENALTY = 5;
+// A dragon rams an enemy head at least this much longer (both die). 0 trades
+// evenly: the top-20 teams win by attrition, 30 head-on trades a game in the
+// first 200 rounds, most of them started by the winner.
+static constexpr int RAM_MARGIN = 0;
 // Percent of a tile's pearl we still count when an enemy head is closer.
 static constexpr int ENEMY_CONTEST = 80;
 // Worth, in tenths of a pearl, of stepping through a portal whose far end
@@ -61,6 +95,11 @@ static constexpr int ONE_WAY_INTO_CENTRE = 1;
 static constexpr int RICH_NEAR = 3;
 // ... each step closer is worth this many tenths of a pearl.
 static constexpr int RICH_PULL = 5;
+// A baked region of at least 40 tiles whose tiles spawn at least this many
+// pearls per 1000 rounds in total is a field: dragons in a starving region
+// head for it as they would for a fast tile (0: fast tiles only). Trauma's
+// middle field makes ~1090; its spawn region ~100.
+static constexpr int FIELD_RATE = 500;
 // Zone play. Until this round every dragon farther than RUSH_NEAR steps
 // from a rich tile is pulled toward one, ...
 static constexpr int RUSH_ROUNDS = 0;  // the rush lost 39-49 to v13
@@ -89,6 +128,27 @@ static constexpr int SQUEEZE_LASTS = 8;
 // ... on maps we do not know (8 there went 17-19 against 2's results; on
 // baked maps 2 cost Stronghold 2/8 against 8's 6/8).
 static constexpr int SQUEEZE_LASTS_BLIND = 2;
+// Dragons at least this long never end a move where an enemy head could
+// reach them next turn unless nothing else lives.
+static constexpr int KING_GUARD_LEN = 8;
+// Room counts and the survival search treat tiles another head could reach
+// within this many moves as taken, for the first moves only ...
+static constexpr int HEAD_REACH = 2;
+// ... counting allied heads too (1) or only enemy heads (0). In our own
+// swarm nearly every tile is within reach of an ally, so no single step
+// counted as safe: we sprinted 5-20 times per 1000 dragon-turns (a segment
+// each) where top-10 teams sprint 1-4, and split less (splits need a safe step).
+static constexpr int HEAD_REACH_ALLIES = 0;
+// With no safe move, the cost in pearls of a portal crossing we cannot see
+// through: off our slot (allies cross the other way), or onto a landing a
+// dragon stood near lately. AS_UNSAFE or more ranks it below every other move.
+static constexpr int AS_UNSAFE = 1000000;
+static constexpr int OFF_SLOT_PEARLS = AS_UNSAFE;
+static constexpr int BLIND_LANDING_PEARLS = AS_UNSAFE;
+// ...except from an on-foot region this small (baked maps only), where an
+// off-slot crossing is the only way out of a portal room.
+static constexpr int TRAPPED_ROOM = 24;
+static constexpr int OFF_SLOT_TRAPPED_PEARLS = 20;
 // Nook diving: only dragons at most this long dive (a long dragon is worth
 // more alive), ...
 static constexpr int DIVE_MAX_LEN = 6;
@@ -113,6 +173,37 @@ static constexpr int FEED_ROUND = 420;
 static constexpr int FEED_ROUND_SMALL = 450;
 // ... keeping this many dragons (king included) out of it ...
 static constexpr int FEED_KEEP = 3;
+// 1: in the feeding phase feed the longest teammate in view that is at least
+// LOCAL_FEED_MARGIN longer, falling back to the sonar king when none is seen.
+static constexpr int LOCAL_FEED = 0;  // 1 went 55-65 on 60 generated maps, 39-41 on the pool
+static constexpr int LOCAL_FEED_MARGIN = 4;
+// Growers (0: off): from GROWER_ROUND, or once the team has GROWER_MIN_UNITS
+// dragons, the starting dragons and any dragon GROWER_PROMOTE_LEN long split
+// only past a core of GROWER_KEEP_BASE + round / GROWER_KEEP_EVERY segments.
+static constexpr int GROWERS = 0;  // 1 (+ LOCAL_FEED) went 51-69 on generated maps, 39-41 on the pool
+static constexpr int GROWER_ROUND = 300;
+static constexpr int GROWER_MIN_UNITS = 40;
+static constexpr int GROWER_PROMOTE_LEN = 10;
+static constexpr int GROWER_KEEP_BASE = 4;
+static constexpr int GROWER_KEEP_EVERY = 30;
+// Trickle feeding before FEED_ROUND: from this round (0: off) a dragon within
+// TRICKLE_RANGE steps of a king it can see, one at least TRICKLE_KING_MIN long
+// and 3 longer than itself, feeds it while the team keeps more than
+// TRICKLE_KEEP dragons.
+static constexpr int TRICKLE_ROUND = 250;  // top-10 kings eat 17 own-corpse pearls in r250-400 (ours 10); 333-307 vs 327-313 baseline over 640 games
+static constexpr int TRICKLE_RANGE = 3;
+static constexpr int TRICKLE_KING_MIN = 5;
+static constexpr int TRICKLE_KEEP = 8;
+// King gathering (0: off): from KING_PULL_LEAD rounds before the feeding,
+// every dragon that will feed walks toward the king it knows, KING_PULL/10
+// pearls per step of distance closed, so its pearls drop where the king eats
+// them (a feeder only dies if it happens to be within FEED_RANGE of the king).
+static constexpr int KING_PULL = 0;  // 8 and 20 lost 3-9 to v22 on Trauma: the king ate less
+// A feeder only dies where at least this much open water lies around it (0:
+// anywhere): the king will not enter a dead-end pocket, so pearls dropped in
+// one are never eaten (a third of ours).
+static constexpr int FEED_OPEN = 0;
+static constexpr int KING_PULL_LEAD = 40;
 // ... and this share, in percent, of the team it began with (0: no cap).
 // Feeding all but three got v7 eliminated from 19 dragons against 9 on
 // Default Small, but a 50% cap lost 6-12 to v5 locally, where every
@@ -123,5 +214,56 @@ static constexpr int FEED_SHARE = 0;
 // 0/8 against 6/8 uncapped. On small maps ladder teams eliminate a team
 // that fed itself down (Default Small, Autarky replays).
 static constexpr int FEED_CAP_TILES = 1100;
+
+// Per-map overrides, chosen from local per-map results (tools: eval4.sh).
+// -1 keeps the default. Maps not listed, and maps the bot does not
+// recognise (the tournament's new maps), play with the defaults above.
+struct MapProfile {
+    char const* name;
+    int width;            // > 0: an unbaked map, matched by its size
+    int height;
+    int ram_margin;
+    int feed_round;       // replaces FEED_ROUND and FEED_ROUND_SMALL
+    int king_hold_round;
+    int hold = -1;        // 0: never hold ground near jackpots
+    int rich_pull = -1;   // replaces RICH_PULL
+    int bored_after = -1; // replaces BORED_AFTER (0: no anti-camping)
+    int dive = -1;        // 0: never dive into a dead-end nook
+    int eat_threat = -1;  // replaces EAT_THREAT: percent of ram risk counted on a step that eats
+    int contest = -1;     // replaces ENEMY_CONTEST: percent of a pearl's value left when an enemy is closer
+    int rooms = -1;       // > 0: room farmers, pulled into small portal rooms at this many tenths of a pearl per step
+};
+// Room farmers (MapProfile::rooms): one dragon in ROOM_SHARE (by id / 2)
+// within ROOM_REACH steps of a small portal room is pulled in until
+// ROOM_ROUNDS; only farmers value the pearls inside, the rest stay out.
+static constexpr int ROOM_REACH = 14;
+static constexpr int ROOM_ROUNDS = 400;
+static constexpr int ROOM_SHARE = 6;
+// Wins for the override vs the default, summed over every local run:
+static constexpr MapProfile MAP_PROFILES[] = {
+    // Autarky, Schooltime, Trophy, Portals and Slithery Fight are not
+    // baked: playing them blind beat playing them baked (Schooltime 12-0,
+    // Autarky 9-3, Portals 16-4; Trophy even), so their entries match by size.
+    // Default: both teams start a wrap apart and ladder opponents eat more of
+    // our side's early pearls than we do (19.4 vs 12.9 by round 100 in v26's
+    // losses; ranked 11-25), so a pearl in the mouth counts a quarter of the risk.
+    {"Default", 0, 0, -1, -1, -1, -1, -1, -1, -1, 25},
+    // Queen of Spades: careful rams 31/52; no nook dives (ladder 13-39, 26
+    // nook deaths a game vs 16). Contest 100 (enemy-closer pearls keep full
+    // value) beat v27 46-34 and v24 43-37 but lost to v22 29-51 (v27: 43-37),
+    // net 118-122 over three opponents: left off.
+    {"Queen Of Spades", 0, 0, 1, -1, -1, -1, -1, -1, 0},
+    // Trauma: ladder losses were all round-500 tiebreaks: ahead on total at
+    // round 400 (80 vs 56) but our king 5.5 long vs 10.4, and feeding it then
+    // burned ~50 length for +7. King hold 200 went 13-11, 17-7, 17-7 (vs
+    // v27/v24/v22) on seeds 1-12 but 36-36 on seeds 13-30 where v27 went
+    // 40-32: noise, left off. Hold 100 lost to all three (6-18, 8-16, 8-16);
+    // no feeding too (10-14, 9-15, 9-15).
+    {"Autarky", 54, 18, -1, 410, -1},         // feed earlier 26/36; no-dives went 4-19 on the ladder (v24) vs 18-30 with dives
+    {"Slithery Fight", 63, 27, -1, -1, 100},  // king stops splitting at 100: 23/36
+    // No anti-camping where it lost (bo12: Devil 2/8, Prisoners Dilemma 0/8).
+    {"Devil", 0, 0, -1, -1, -1, -1, -1, 0},
+    {"Prisoners Dilemma", 0, 0, -1, -1, -1, -1, -1, 0},
+};
 
 }  // namespace tuning

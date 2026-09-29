@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import json
 import multiprocessing
 import pathlib
 import sys
@@ -43,11 +44,14 @@ def play(job: tuple[str, str, str, str, str]) -> dict:
 
 def play_once(job: tuple[str, str, str, str, str]) -> dict:
     """Run one game. Team A is wasm_a. Returns a summary dict."""
-    map_path, wasm_a, wasm_b, label_a, label_b = job
+    map_path, wasm_a, wasm_b, label_a, label_b, seed, replay_dir = job
     from unswbc.engine import EngineModule
     from unswbc.sandbox import SandboxBot, WasmPool
 
-    pools = {"A": WasmPool([wasm_a], team="a"), "B": WasmPool([wasm_b], team="b")}
+    try:  # unswbc >= 1.1 names the pool's random stream 'key'
+        pools = {"A": WasmPool([wasm_a], key="a"), "B": WasmPool([wasm_b], key="b")}
+    except TypeError:
+        pools = {"A": WasmPool([wasm_a], team="a"), "B": WasmPool([wasm_b], team="b")}
     live: dict[int, SandboxBot] = {}
     teams: dict[int, str] = {}
     lengths: dict[int, int] = {}
@@ -56,6 +60,7 @@ def play_once(job: tuple[str, str, str, str, str]) -> dict:
     errors: list[str] = []
     last_label: dict[int, str] = {}
     why: collections.Counter = collections.Counter()
+    labels: collections.Counter = collections.Counter()  # (team, 100-round phase, indicator) -> turns
 
     def spawn(dragon_id: int, init: bytes) -> None:
         team = next((l.split()[1] for l in init.decode().splitlines() if l.startswith("TEAM")), "A")
@@ -63,15 +68,21 @@ def play_once(job: tuple[str, str, str, str, str]) -> dict:
         live[dragon_id] = SandboxBot(pools[team], init=init, name=str(dragon_id))
 
     def reply(dragon_id: int, block: bytes) -> bytes:
-        for line in block.split(b"\n", 8):
+        lines = block.split(b"\n", 8)
+        first = lines[0].split() if lines else []
+        phase = (int(first[1]) - 1) // 100 if len(first) == 2 and first[1].isdigit() else -1
+        for line in lines:
             if line.startswith(b"LENGTH "):
                 lengths[dragon_id] = int(line.split()[1])
                 break
         bot = live[dragon_id]
         out = bot.ask(block)
+        label = "none"
         for line in (out or b"").splitlines():
             if line.startswith(b"INDICATOR "):
-                last_label[dragon_id] = line[10:].decode(errors="replace").strip()
+                label = line[10:].decode(errors="replace").strip()
+                last_label[dragon_id] = label
+        labels[(teams.get(dragon_id, "?"), min(phase, 4), label)] += 1
         if bot.error is not None and len(errors) < 5:
             errors.append(f"{teams.get(dragon_id)}{dragon_id}: {bot.error}")
         metrics = getattr(bot, "live", None)
@@ -90,19 +101,29 @@ def play_once(job: tuple[str, str, str, str, str]) -> dict:
 
     engine = EngineModule()
     try:
-        result = engine.run(pathlib.Path(map_path).read_bytes(), reply, death, spawn, lambda _l: None, 0)
+        try:  # unswbc >= 1.1 takes a seed, so one map gives many different games
+            # 2 = keep INDICATOR text, so a saved replay shows each turn's choice
+            result = engine.run(pathlib.Path(map_path).read_bytes(), reply, death, spawn, lambda _l: None,
+                                2 if replay_dir else 0, seed)
+        except TypeError:
+            result = engine.run(pathlib.Path(map_path).read_bytes(), reply, death, spawn, lambda _l: None, 0)
     finally:
         for bot in live.values():
             bot.stop()
         for pool in pools.values():
             pool.close()
 
+    replay_file = None
+    if replay_dir:
+        replay_file = f"{pathlib.Path(map_path).stem}_{seed}_{label_a}_vs_{label_b}.replay"
+        (pathlib.Path(replay_dir) / replay_file).write_bytes(engine.replay(label_a, label_b))
+
     def team_stats(team: str) -> tuple[int, int, int]:
         mine = [length for dragon, length in lengths.items() if teams.get(dragon) == team]
         return (max(mine) if mine else 0, sum(mine), len(mine))
 
     return {
-        "map": pathlib.Path(map_path).stem,
+        "map": pathlib.Path(map_path).stem + (f"#{seed}" if seed else ""),
         "a": label_a,
         "b": label_b,
         "winner": result.winner,
@@ -113,6 +134,10 @@ def play_once(job: tuple[str, str, str, str, str]) -> dict:
         "points": peak_points,
         "errors": errors,
         "why": dict(why),
+        "labels": dict(labels),
+        "replay": replay_file,
+        "map_name": next((line[9:].strip() for line in pathlib.Path(map_path).read_text().splitlines()
+                          if line.startswith("MAP_NAME ")), pathlib.Path(map_path).stem),
     }
 
 
@@ -124,6 +149,9 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=6)
     parser.add_argument("--one-side", action="store_true", help="only play with bot as team A")
     parser.add_argument("--why", action="store_true", help="tally our deaths by the dragon's last indicator")
+    parser.add_argument("--labels", action="store_true", help="share of our turns per indicator, per 100-round phase")
+    parser.add_argument("--replays", help="folder for every game's replay plus a meta.json for the replay tools")
+    parser.add_argument("--seeds", type=int, default=1, help="games per map and side, each with its own engine seed")
     args = parser.parse_args()
 
     if args.maps:
@@ -141,11 +169,14 @@ def main() -> int:
     label_bot = pathlib.Path(args.bot).name
     label_opp = pathlib.Path(args.opponent).name
 
+    if args.replays:
+        pathlib.Path(args.replays).mkdir(parents=True, exist_ok=True)
     jobs = []
     for map_path in maps:
-        jobs.append((map_path, wasm_bot, wasm_opp, label_bot, label_opp))
-        if not args.one_side:
-            jobs.append((map_path, wasm_opp, wasm_bot, label_opp, label_bot))
+        for seed in range(args.seeds):
+            jobs.append((map_path, wasm_bot, wasm_opp, label_bot, label_opp, seed, args.replays))
+            if not args.one_side:
+                jobs.append((map_path, wasm_opp, wasm_bot, label_opp, label_bot, seed, args.replays))
 
     started = time.monotonic()
     with multiprocessing.Pool(args.jobs) as pool:
@@ -182,6 +213,29 @@ def main() -> int:
         print("\nour deaths by (reason, last indicator):")
         for (reason, label), count in tally.most_common():
             print(f"  {reason} {label:<12} {count}")
+    if args.replays:
+        meta = []
+        for res in results:
+            side = "A" if res["a"] == label_bot else "B"
+            outcome = "draw" if res["winner"] is None else "win" if res["winner"] == side else "loss"
+            meta.append({"game": res["replay"][:-7], "side": side, "opponent": label_opp, "opponentElo": 0,
+                         "ranked": False, "result": outcome, "map": res["map_name"], "file": res["replay"]})
+        (pathlib.Path(args.replays) / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
+    if args.labels:
+        turns: collections.Counter = collections.Counter()
+        for res in results:
+            side = "A" if res["a"] == label_bot else "B"
+            for (team, phase, label), count in res["labels"].items():
+                if team == side:
+                    turns[(phase, label)] += count
+        names = sorted({label for (_, label) in turns}, key=lambda l: -sum(c for (_, x), c in turns.items() if x == l))
+        print("\nour turns per indicator, % of each phase (rounds 1-100, ..., 401-500):")
+        for label in names:
+            cells = []
+            for phase in range(5):
+                total = sum(c for (p, _), c in turns.items() if p == phase)
+                cells.append(f"{100 * turns[(phase, label)] / total:5.1f}" if total else "    -")
+            print(f"  {label:<15}" + " ".join(cells))
     print(f"\n{label_bot} vs {label_opp}: {wins}W {losses}L {draws}D  "
           f"({time.monotonic() - started:.0f}s)   death codes: W wall, S self, O other body, H head-to-head, A no action")
     return 0

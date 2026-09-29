@@ -97,9 +97,10 @@ def pearl_profile(rng: random.Random) -> list[tuple[int, int]]:
     return rng.choice(menus)
 
 
-def generate(rng: random.Random, name: str) -> str | None:
-    w = rng.randrange(14, 49)
-    h = rng.randrange(14, 41)
+def generate(rng: random.Random, name: str, wide: bool = False) -> str | None:
+    # wide: the ranges of the community map generator (16x16 to 63x27, 1-7 dragons a side)
+    w = rng.randrange(16, 64) if wide else rng.randrange(14, 49)
+    h = rng.randrange(16, 28) if wide else rng.randrange(14, 41)
     kind = rng.choice(["x", "y", "xy"])
     board = Board(w, h, kind)
     density = rng.choice([0.0, 0.05, 0.12, 0.2, 0.28])
@@ -121,7 +122,7 @@ def generate(rng: random.Random, name: str) -> str | None:
             gaps[(x, y)] = gap
             gaps[mirror(kind, x, y, w, h)] = gap
 
-    team_size = rng.choice([1, 2, 2, 3])
+    team_size = rng.choice([1, 2, 2, 3, 3, 4, 5, 6, 7]) if wide else rng.choice([1, 2, 2, 3])
     length = rng.choice([3, 4, 4, 5])
     dragons: list[list[tuple[int, int]]] = []
     used: set[tuple[int, int]] = set()
@@ -181,6 +182,7 @@ def main() -> int:
     parser.add_argument("out")
     parser.add_argument("--count", type=int, default=20)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--wide", action="store_true", help="16x16 to 63x27 boards, 1-7 dragons a side")
     args = parser.parse_args()
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -188,7 +190,7 @@ def main() -> int:
     made = 0
     while made < args.count:
         name = f"gen{args.seed}_{made:02d}"
-        text = generate(rng, name)
+        text = generate(rng, name, args.wide)
         if text is None:
             continue
         (out / f"{name}.map").write_text(text)
