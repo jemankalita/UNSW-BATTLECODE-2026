@@ -48,6 +48,24 @@ static constexpr int BIG_MAP_CAP = 64;
 // all but a two-segment head (0: never), when its tail has this much room.
 static constexpr int REVERSE_LEN = 0;
 static constexpr int REVERSE_ROOM = 4;
+// Harvest dives (0: off): a dragon at least HARVEST_LEN long may run into a
+// dead-end pocket for at least HARVEST_MIN_EAT pearls when its tail stays
+// outside it, then turn round there (splitting off all but a two-segment
+// head, which dies in the pocket and leaves a pearl for the next pass). The
+// top teams farm Autarky's fountain nooks this way with their 14-long
+// starting dragons every 7-8 rounds: 149 pearls from the middle by round 300
+// against our 83.
+static constexpr int HARVEST_LEN = 0;
+static constexpr int HARVEST_MIN_EAT = 2;
+static constexpr int HARVEST_BONUS = 2;  // pearls' worth for keeping the body
+// 1: a dragon at least HARVEST_LEN long keeps that many segments and only buds
+// children off the rest, so harvesters exist (ours split to length 2 by
+// round 5).
+static constexpr int HARVEST_KEEP = 0;
+// Percent of the crowding cost (ally heads and bodies near the step's end).
+// Top-10 teams have an ally head within 2 on 22-38% of their turns on
+// Autarky/Trophy/Portals, we on 5-21%, and they eat from more tiles.
+static constexpr int CROWD_PCT = 100;
 // Anti-camping: after BORED_AFTER rounds without eating, ending a move on a
 // tile among our head's last BORED_WINDOW tiles costs BORED_PENALTY tenths
 // of a pearl per visit (0: off).
@@ -172,10 +190,10 @@ static constexpr int GROWER_KEEP_EVERY = 30;
 // TRICKLE_RANGE steps of a king it can see, one at least TRICKLE_KING_MIN long
 // and 3 longer than itself, feeds it while the team keeps more than
 // TRICKLE_KEEP dragons.
-static constexpr int TRICKLE_ROUND = 0;  // 260 went 49-71 on 60 generated maps, 43-37 on the pool
-static constexpr int TRICKLE_RANGE = 6;
-static constexpr int TRICKLE_KING_MIN = 8;
-static constexpr int TRICKLE_KEEP = 6;
+static constexpr int TRICKLE_ROUND = 250;  // top-10 kings eat 17 own-corpse pearls in r250-400 (ours 10); 333-307 vs 327-313 baseline over 640 games
+static constexpr int TRICKLE_RANGE = 3;
+static constexpr int TRICKLE_KING_MIN = 5;
+static constexpr int TRICKLE_KEEP = 8;
 // King gathering (0: off): from KING_PULL_LEAD rounds before the feeding,
 // every dragon that will feed walks toward the king it knows, KING_PULL/10
 // pearls per step of distance closed, so its pearls drop where the king eats

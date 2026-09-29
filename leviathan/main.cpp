@@ -816,7 +816,7 @@ class Brain {
             score += STRAIGHT;
         }
         if (!hold) {
-            score -= crowding(end);
+            score -= crowding(end) * tuning::CROWD_PCT / 100;
         }
         score += rich_pull(end);
         score += room_pull(end);
@@ -1051,8 +1051,13 @@ class Brain {
     // pearls feed the next diver. Worth it when the pearls in view will make
     // us long enough to split at least once. Only static nooks count: every
     // tile past the first step has exactly one way on, by the map's edges.
+    bool harvester() const {
+        return tuning::HARVEST_LEN > 0 && len_ >= tuning::HARVEST_LEN;
+    }
+
     bool dive_worth(Plan const& plan, long long& score) {
-        if (round_ > tuning::SPLIT_LAST_ROUND || len_ > tuning::DIVE_MAX_LEN) {
+        bool harvest = harvester();
+        if (round_ > tuning::SPLIT_LAST_ROUND || (len_ > tuning::DIVE_MAX_LEN && !harvest)) {
             return false;
         }
         king::Report const& crown = king_.best();
@@ -1101,6 +1106,9 @@ class Brain {
         if (!dead_end) {
             return false;
         }
+        if (harvest) {
+            return harvest_worth(body, eaten, score);
+        }
         int children = std::min((length - 2) / tuning::CHILD_SIZE, limit_ - units_);
         if (children < 1) {
             return false;
@@ -1128,6 +1136,26 @@ class Brain {
             return false;
         }
         score = static_cast<long long>(eaten) * PEARL + static_cast<long long>(children) * tuning::DIVE_CHILD * PEARL;
+        return true;
+    }
+
+    // A long dragon's dive: it keeps all but two segments by turning round
+    // at the dead end, so its tail must still be outside with a free tile
+    // to leave by, and a new dragon must fit under the unit limit.
+    bool harvest_worth(std::vector<int> const& body, int eaten, long long& score) {
+        if (eaten < tuning::HARVEST_MIN_EAT || units_ >= limit_) {
+            return false;
+        }
+        int tail = body.back();
+        if (open_room(tail, tuning::REVERSE_ROOM) < tuning::REVERSE_ROOM) {
+            return false;
+        }
+        for (Other const& other : others_) {
+            if (other.enemy && logic::manhattan(cx(tail), cy(tail), other.x, other.y, w_, h_) <= 3) {
+                return false;
+            }
+        }
+        score = static_cast<long long>(eaten + tuning::HARVEST_BONUS) * PEARL;
         return true;
     }
 
@@ -1475,6 +1503,10 @@ class Brain {
         if (!ct.can_split(tuning::CHILD_SIZE) || (!tuning::SPLIT_UNDER_THREAT && threat_[static_cast<std::size_t>(head_)] > 0)) {
             return false;
         }
+        if (tuning::HARVEST_KEEP != 0 && tuning::HARVEST_LEN > 0 &&
+            len_ - tuning::CHILD_SIZE < tuning::HARVEST_LEN && len_ >= tuning::HARVEST_LEN) {
+            return false;
+        }
         king::Report const& crown = king_.best();
         if (round_ >= king_hold() && crown.valid && crown.id == id_) {
             return false;
@@ -1518,10 +1550,16 @@ class Brain {
     // way constantly (a third of all their splits on Slithery Fight, 499 on
     // Schooltime), where a long body cannot turn in one-wide water.
     bool reverse(unswbc::Controller& ct) {
-        if (tuning::REVERSE_LEN <= 0 || len_ < tuning::REVERSE_LEN || !ct.can_split(len_ - 2)) {
+        bool enabled = (tuning::REVERSE_LEN > 0 && len_ >= tuning::REVERSE_LEN) || harvester();
+        if (!enabled || !ct.can_split(len_ - 2)) {
             return false;
         }
-        if (static_cast<int>(body_.size()) < len_ || open_room(body_.back(), tuning::REVERSE_ROOM) < tuning::REVERSE_ROOM) {
+        bool tail_known = static_cast<int>(body_.size()) >= len_;
+        if (!tail_known && !harvester()) {
+            return false;
+        }
+        // A harvester's tail may be out of view; it left open water there.
+        if (tail_known && open_room(body_.back(), tuning::REVERSE_ROOM) < tuning::REVERSE_ROOM) {
             return false;
         }
         ct.do_split(len_ - 2);
