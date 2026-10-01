@@ -458,7 +458,7 @@ class Brain {
     // Beside the king, a feeder turns into its own neck: it dies on the
     // spot and every second segment becomes a pearl within the king's reach.
     bool feed_king(unswbc::Controller& ct) {
-        if (feed_target_ < 0) {
+        if (feed_target_ < 0 || hunt_target() >= 0) {
             return false;
         }
         king::Report const& target = king_.best();
@@ -640,7 +640,7 @@ class Brain {
     // pass, our own tail included, is treated as vacated during the turn.
     std::vector<Plan> walks(int steps) {
         std::vector<Plan> out;
-        if (steps > 1 && len_ <= steps) {
+        if (steps > 1 && len_ - logic::sprint_cost(len_, steps) < 2) {
             return out;
         }
         Plan seed;
@@ -815,7 +815,7 @@ class Brain {
             return;
         }
         int steps = static_cast<int>(plan.dirs.size());
-        plan.length = len_ - (steps - 1) + plan.eaten;
+        plan.length = len_ - logic::sprint_cost(len_, steps) + plan.eaten;
         if (plan.ram_len > 0) {
             plan.safe = false;
             return;
@@ -835,7 +835,7 @@ class Brain {
         // Ending a step from an enemy head is a last resort. Only a step: a
         // berth that also shuns sprint reach makes the champion too timid to
         // hold ground (the loong series measured a wider berth as a loss).
-        if (len_ >= tuning::KING_GUARD_LEN && near_[static_cast<std::size_t>(plan.cells.back())] != 0) {
+        if ((len_ >= tuning::KING_GUARD_LEN || queen()) && near_[static_cast<std::size_t>(plan.cells.back())] != 0) {
             plan.safe = false;
         }
         int end = plan.cells.back();
@@ -847,7 +847,7 @@ class Brain {
             }
         }
         bool hold = holding();
-        bool guarded = len_ >= tuning::KING_GUARD_LEN;
+        bool guarded = len_ >= tuning::KING_GUARD_LEN || queen();
         int threat_share = hold && !guarded ? tuning::HOLD_THREAT : 100;
         if (plan.eaten > 0) {
             // A pearl in the mouth, often from a fresh corpse, is worth some
@@ -881,6 +881,7 @@ class Brain {
             long long visits = std::count(recent_.begin(), recent_.end(), end);
             score -= visits * tuning::BORED_PENALTY * PEARL / 10;
         }
+        score += hunt_pull(end);
         if (tuning::IMITATE > 0 && steps == 1 && !plan.explore && (tuning::IMITATE_CALM == 0 || !enemy_within(3))) {
             score += static_cast<long long>(imitation(plan.dirs.front(), plan.cells.front()) * tuning::IMITATE * PEARL / 10);
         }
@@ -1047,7 +1048,7 @@ class Brain {
             return false;
         }
         king::Report const& crown = king_.best();
-        if (round_ >= king_hold() && crown.valid && crown.id == id_) {
+        if (queen() || (round_ >= king_hold() && crown.valid && crown.id == id_)) {
             return false;
         }
         int entry = plan.cells.back();
@@ -1122,7 +1123,7 @@ class Brain {
             return false;
         }
         king::Report const& crown = king_.best();
-        if (round_ >= king_hold() && crown.valid && crown.id == id_) {
+        if (queen() || (round_ >= king_hold() && crown.valid && crown.id == id_)) {
             return false;
         }
         std::vector<int> body = body_after(plan);
@@ -1218,6 +1219,64 @@ class Brain {
         }
         score = static_cast<long long>(eaten + tuning::HARVEST_BONUS) * PEARL;
         return true;
+    }
+
+    bool queen() const {
+        return tuning::QUEEN_RULES != 0 && logic::is_queen(id_);
+    }
+
+    // The enemy queen's head if it is in view, else -1.
+    int enemy_queen() const {
+        if (tuning::QUEEN_RULES == 0) {
+            return -1;
+        }
+        for (Other const& other : others_) {
+            if (other.enemy && logic::is_queen(other.id)) {
+                return map_.index(other.x, other.y);
+            }
+        }
+        return -1;
+    }
+
+    // The enemy head we would hunt: long, longer than us, in view; -1 if none.
+    int hunt_target() const {
+        if (!queen() && units_ > 1) {
+            int q = enemy_queen();
+            if (q >= 0) {
+                return q;
+            }
+        }
+        if (tuning::HUNT_ROUND <= 0 || round_ < tuning::HUNT_ROUND || units_ <= 1) {
+            return -1;
+        }
+        king::Report const& crown = king_.best();
+        if (crown.valid && crown.id == id_) {
+            return -1;
+        }
+        int best = -1;
+        int best_len = 0;
+        for (Other const& other : others_) {
+            if (other.enemy && other.len >= tuning::HUNT_MIN_LEN && other.len > len_ && other.len > best_len) {
+                best_len = other.len;
+                best = map_.index(other.x, other.y);
+            }
+        }
+        return best;
+    }
+
+    long long hunt_pull(int end) const {
+        int target = hunt_target();
+        if (target < 0) {
+            return 0;
+        }
+        if (target == enemy_queen()) {
+            int here = logic::manhattan(cx(head_), cy(head_), cx(target), cy(target), w_, h_);
+            int there = logic::manhattan(cx(end), cy(end), cx(target), cy(target), w_, h_);
+            return static_cast<long long>(here - there) * tuning::QUEEN_HUNT_PULL * PEARL / 10;
+        }
+        int here = logic::manhattan(cx(head_), cy(head_), cx(target), cy(target), w_, h_);
+        int there = logic::manhattan(cx(end), cy(end), cx(target), cy(target), w_, h_);
+        return static_cast<long long>(here - there) * tuning::HUNT_PULL * PEARL / 10;
     }
 
     // The top teams' learned preference for stepping 'dir' onto 'to', in
@@ -1641,7 +1700,15 @@ class Brain {
     Plan const* best_ram(std::vector<Plan> const& plans, bool cornered) const {
         Plan const* best = nullptr;
         for (Plan const& plan : plans) {
-            if (plan.ram_len <= 0 || !logic::worth_ram(len_, plan.ram_len, units_, cornered, ram_margin_)) {
+            if (plan.ram_len <= 0) {
+                continue;
+            }
+            bool at_queen = tuning::QUEEN_RULES != 0 && enemy_queen() >= 0 && plan.cells.back() == enemy_queen();
+            bool worth = at_queen ? units_ > 1 || cornered : logic::worth_ram(len_, plan.ram_len, units_, cornered, ram_margin_);
+            if (queen() && !cornered) {
+                worth = false;
+            }
+            if (!worth) {
                 continue;
             }
             if (best == nullptr || plan.ram_len > best->ram_len) {

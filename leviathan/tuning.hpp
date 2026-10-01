@@ -90,6 +90,20 @@ static constexpr int IMITATE = 0;  // 5/10/20 alone: pool 30-50/25-55/14-66, uns
 // 1: only while no enemy head is in view (the learned preference won on big
 // open maps and lost in dense fights, where our own safety search is better).
 static constexpr int IMITATE_CALM = 0;
+// King hunting (0: off): from HUNT_ROUND, a dragon that is not our king and
+// sees an enemy head at least HUNT_MIN_LEN long and longer than itself walks
+// at it (HUNT_PULL tenths of a pearl per step closed) and does not feed our
+// king meanwhile; the ram itself is the usual worth_ram (a head-on kills
+// both, and the round-500 tiebreak is the longest dragon).
+static constexpr int HUNT_ROUND = 0;
+// Slay Queen rules (1: on): our queen (id 0 or 1) is the king, never rams
+// unless cornered and keeps a step from enemy heads; any other dragon rams
+// the enemy queen when it can and walks at her (QUEEN_HUNT_PULL tenths of a
+// pearl per step) when she is in view.
+static constexpr int QUEEN_RULES = 1;
+static constexpr int QUEEN_HUNT_PULL = 30;
+static constexpr int HUNT_MIN_LEN = 8;
+static constexpr int HUNT_PULL = 20;
 // Anti-camping: after BORED_AFTER rounds without eating, ending a move on a
 // tile among our head's last BORED_WINDOW tiles costs BORED_PENALTY tenths
 // of a pearl per visit (0: off).

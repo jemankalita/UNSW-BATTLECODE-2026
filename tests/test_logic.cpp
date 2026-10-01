@@ -137,7 +137,11 @@ void test_team() {
 }
 
 void test_feeding() {
-    expect(logic::better_king(9, 5, 8, 1), "longer dragon is king");
+    expect(logic::better_king(9, 5, 8, 3), "longer dragon is king");
+    expect(logic::better_king(3, 1, 20, 5), "the queen is king whatever her length");
+    expect(!logic::better_king(20, 5, 3, 0), "no dragon outranks the queen");
+    expect(logic::free_steps(4) == 1 && logic::free_steps(5) == 2 && logic::free_steps(12) == 3, "ceil(L/4) free steps");
+    expect(logic::sprint_cost(8, 2) == 0 && logic::sprint_cost(4, 2) == 1, "only steps past the free ones cost");
     expect(logic::better_king(9, 2, 9, 5), "ties go to the lower id");
     expect(!logic::better_king(9, 5, 9, 2), "the higher id loses a tie");
     expect(!logic::feeding_time(300, 420, 10, 3), "no feeding before the late game");

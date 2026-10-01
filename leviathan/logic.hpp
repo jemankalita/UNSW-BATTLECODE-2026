@@ -335,8 +335,31 @@ inline bool want_split(int length, int units, int cap, int round, int split_len,
 
 // The team's king is its longest dragon, ties to the lower id, so every
 // dragon that hears the same news crowns the same one.
+// Slay Queen update: dragons 0 and 1 are the two queens, and at round 500
+// the longer queen wins (a dead queen counts as length 0). Only allies are
+// offered to the tracker, so a queen id here is always our own queen: she is
+// the king while she lives.
+inline bool is_queen(int id) {
+    return id == 0 || id == 1;
+}
+
 inline bool better_king(int len_a, int id_a, int len_b, int id_b) {
+    if (is_queen(id_a) != is_queen(id_b)) {
+        return is_queen(id_a);
+    }
     return len_a != len_b ? len_a > len_b : id_a < id_b;
+}
+
+// Steps a dragon of this length takes free in one turn: ceil(length / 4).
+inline int free_steps(int length) {
+    int free = (length + 3) / 4;
+    return free < 1 ? 1 : free;
+}
+
+// Segments a move of 'steps' steps costs.
+inline int sprint_cost(int length, int steps) {
+    int extra = steps - free_steps(length);
+    return extra > 0 ? extra : 0;
 }
 
 // The tiebreak at the round limit is the longest single dragon. Late in the
