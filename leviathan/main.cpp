@@ -1,10 +1,12 @@
 #include "helper.hpp"
+#include "imitate.hpp"
 #include "king.hpp"
 #include "logic.hpp"
 #include "tuning.hpp"
 #include "world.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -879,6 +881,9 @@ class Brain {
             long long visits = std::count(recent_.begin(), recent_.end(), end);
             score -= visits * tuning::BORED_PENALTY * PEARL / 10;
         }
+        if (tuning::IMITATE > 0 && steps == 1 && !plan.explore && (tuning::IMITATE_CALM == 0 || !enemy_within(3))) {
+            score += static_cast<long long>(imitation(plan.dirs.front(), plan.cells.front()) * tuning::IMITATE * PEARL / 10);
+        }
         long long dive_score = 0;
         if (dive_ && !plan.safe && steps == 1 && !plan.portal &&
             (dive_worth(plan, dive_score) || pocket_worth(plan, dive_score))) {
@@ -1213,6 +1218,96 @@ class Brain {
         }
         score = static_cast<long long>(eaten + tuning::HARVEST_BONUS) * PEARL;
         return true;
+    }
+
+    // The top teams' learned preference for stepping 'dir' onto 'to', in
+    // softmax-logit units, from what we can see (imitate.hpp).
+    double imitation(int dir, int to) {
+        static constexpr int RADIUS = 3;
+        auto visible = [&](int cell) {
+            return logic::torus_span(cx(cell), cx(head_), w_) <= RADIUS && logic::torus_span(cy(cell), cy(head_), h_) <= RADIUS;
+        };
+        double grad = 0;
+        int near2 = 0;
+        for (int dy = -RADIUS; dy <= RADIUS; ++dy) {
+            for (int dx = -RADIUS; dx <= RADIUS; ++dx) {
+                int cell = map_.index(logic::wrap_coord(cx(head_) + dx, w_), logic::wrap_coord(cy(head_) + dy, h_));
+                if (!pearl_now(cell)) {
+                    continue;
+                }
+                int d = logic::manhattan(cx(to), cy(to), cx(cell), cy(cell), w_, h_);
+                grad += std::pow(0.7, d);
+                near2 += d <= 2 ? 1 : 0;
+            }
+        }
+        // Open water from the landing tile inside our window; our last two
+        // segments will have moved on.
+        int room = 0;
+        {
+            int stamp = next_stamp();
+            mark_[static_cast<std::size_t>(to)] = stamp;
+            mark_[static_cast<std::size_t>(head_)] = stamp;
+            std::vector<int> queue{to};
+            for (std::size_t q = 0; q < queue.size() && room < 25; ++q) {
+                int cell = queue[q];
+                ++room;
+                for (int d2 = 0; d2 < 4; ++d2) {
+                    world::Landing land = map_.step(cx(cell), cy(cell), d2, true);
+                    if (!land.ok || land.portal) {
+                        continue;
+                    }
+                    int next = map_.index(land.x, land.y);
+                    if (mark_[static_cast<std::size_t>(next)] == stamp || !visible(next)) {
+                        continue;
+                    }
+                    mark_[static_cast<std::size_t>(next)] = stamp;
+                    int who = occ_[static_cast<std::size_t>(next)];
+                    if (who >= 0) {
+                        auto at = std::find(body_.begin(), body_.end(), next);
+                        bool freeing = who == id_ && at != body_.end() && at - body_.begin() >= len_ - 2;
+                        if (!freeing) {
+                            continue;
+                        }
+                    }
+                    queue.push_back(next);
+                }
+            }
+        }
+        int e1 = 0, e2 = 0, a1 = 0, a2 = 0, longer = 0, shorter = 0;
+        for (Other const& other : others_) {
+            int d = logic::manhattan(cx(to), cy(to), other.x, other.y, w_, h_);
+            if (other.enemy) {
+                if (d <= 1) {
+                    ++e1;
+                    (other.len >= len_ ? longer : shorter) += 1;
+                } else if (d == 2) {
+                    ++e2;
+                }
+            } else if (d <= 1) {
+                ++a1;
+            } else if (d == 2) {
+                ++a2;
+            }
+        }
+        int edge = 0;
+        int cell = to;
+        for (int s = 0; s < 3; ++s) {
+            world::Landing land = map_.step(cx(cell), cy(cell), dir, true);
+            if (!land.ok || land.portal) {
+                break;
+            }
+            cell = map_.index(land.x, land.y);
+            ++edge;
+        }
+        double const f[imitate::COUNT] = {pearl_now(to) ? 1.0 : 0.0, grad, static_cast<double>(near2), static_cast<double>(room),
+                                          static_cast<double>(e1), static_cast<double>(e2), static_cast<double>(a1),
+                                          static_cast<double>(a2), dir == facing_ ? 1.0 : 0.0, static_cast<double>(longer),
+                                          static_cast<double>(shorter), static_cast<double>(edge)};
+        double logit = 0;
+        for (int k = 0; k < imitate::COUNT; ++k) {
+            logit += imitate::WEIGHT[k] * (f[k] - imitate::MEAN[k]) / imitate::SD[k];
+        }
+        return logit;
     }
 
     // Dragons packed together wall each other in: keep our head away from

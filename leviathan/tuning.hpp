@@ -83,6 +83,13 @@ static constexpr int BLIND_RICH_ROUNDS = 350;
 static constexpr int SCOUT_EVERY = 0;
 static constexpr int SCOUT_FOG = 25;
 static constexpr int SCOUT_ROUNDS = 120;
+// Imitation (0: off): each single step also scores the top teams' learned
+// preference for it (imitate.hpp), at IMITATE tenths of a pearl per unit of
+// their softmax logit.
+static constexpr int IMITATE = 0;  // 5/10/20 alone: pool 30-50/25-55/14-66, unseen 18-22/21-19/14-26 vs v28
+// 1: only while no enemy head is in view (the learned preference won on big
+// open maps and lost in dense fights, where our own safety search is better).
+static constexpr int IMITATE_CALM = 0;
 // Anti-camping: after BORED_AFTER rounds without eating, ending a move on a
 // tile among our head's last BORED_WINDOW tiles costs BORED_PENALTY tenths
 // of a pearl per visit (0: off).
