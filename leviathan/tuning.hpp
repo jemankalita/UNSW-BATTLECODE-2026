@@ -102,6 +102,24 @@ static constexpr int HUNT_ROUND = 0;
 // pearl per step) when she is in view.
 static constexpr int QUEEN_RULES = 1;
 static constexpr int QUEEN_HUNT_PULL = 30;
+// Free multi-steps (0: off): a dragon of length L moves ceil(L/4) steps a
+// turn for free (Slay Queen update). With this on, a dragon of 5+ also weighs
+// its free 2-step walks every turn, valued like single steps, and any sprint
+// pays only for the steps past the free ones. Post-reset ladder replays: the
+// top teams and we use multi-steps in 0.1% of moves.
+static constexpr int FREE_MULTI = 1;  // vs v29: 106-94 (pool+unseen, 200 games), vs v22 21-19 (v29 17-23)
+// v29 ladder: our queen died in 100 of 104 games, half by round 33, nearly
+// all at length 2-4: she budded farmers from round 0 like any dragon. Now she
+// only splits when cornered (never buds, never reverses), counts enemy ram
+// threat at QUEEN_THREAT percent, crowding at QUEEN_CROWD percent, and needs
+// QUEEN_ROOM more free tiles than an ordinary step to call it safe.
+static constexpr int QUEEN_SPLIT = 1;  // 0 (+threat/crowd 300, room 8): q30 14-26 vs v29
+static constexpr int QUEEN_THREAT = 100;
+static constexpr int QUEEN_CROWD = 100;
+static constexpr int QUEEN_ROOM = 0;
+// 1: the queen keeps a step from every head and allies from hers (a v29
+// ladder queen died head-on with an ally). q31 19-23, q31n 14-28 vs v29.
+static constexpr int QUEEN_CLASH = 0;
 static constexpr int HUNT_MIN_LEN = 8;
 static constexpr int HUNT_PULL = 20;
 // Anti-camping: after BORED_AFTER rounds without eating, ending a move on a
