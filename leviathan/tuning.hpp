@@ -66,6 +66,23 @@ static constexpr int HARVEST_KEEP = 0;
 // Top-10 teams have an ally head within 2 on 22-38% of their turns on
 // Autarky/Trophy/Portals, we on 5-21%, and they eat from more tiles.
 static constexpr int CROWD_PCT = 100;
+// Rich-tile sharing (0: off): on odd rounds a dragon sends a tile it knows
+// spawns fast (seen itself or heard from an ally) instead of the KING news,
+// so the whole swarm learns where the fountains are. The top teams sit on
+// Schooltime's fountain 18% of their turns (124 pearls by round 150); we
+// never found it and ate none.
+static constexpr int SHARE_RICH = 0;
+// On an unbaked map, until BLIND_RICH_ROUNDS, each step closer to the
+// nearest known rich tile is worth BLIND_RICH_PULL tenths of a pearl (0: off)
+// while it is more than RICH_NEAR away.
+static constexpr int BLIND_RICH_PULL = 0;
+static constexpr int BLIND_RICH_ROUNDS = 350;
+// Scouts (0: off): one dragon in SCOUT_EVERY (by id) prices unseen water at
+// SCOUT_FOG percent of a pearl instead of FOG_PRIOR until SCOUT_ROUNDS, so
+// fountains get found at all.
+static constexpr int SCOUT_EVERY = 0;
+static constexpr int SCOUT_FOG = 25;
+static constexpr int SCOUT_ROUNDS = 120;
 // Anti-camping: after BORED_AFTER rounds without eating, ending a move on a
 // tile among our head's last BORED_WINDOW tiles costs BORED_PENALTY tenths
 // of a pearl per visit (0: off).
