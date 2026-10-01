@@ -204,6 +204,7 @@ class Brain {
     int bored_after_ = tuning::BORED_AFTER;
     bool dive_ = true;            // profile: dead-end nook dives allowed
     int eat_threat_ = tuning::EAT_THREAT;
+    int feed_max_pct_ = tuning::FEED_MAX_PCT;
     int contest_ = tuning::ENEMY_CONTEST;
     int rooms_ = 0;               // room-farmer pull, tenths of a pearl per step (0: off)
     int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
@@ -279,6 +280,7 @@ class Brain {
         eat_threat_ = tuning::EAT_THREAT;
         contest_ = tuning::ENEMY_CONTEST;
         rooms_ = 0;
+        feed_max_pct_ = tuning::FEED_MAX_PCT;
         for (tuning::MapProfile const& profile : tuning::MAP_PROFILES) {
             bool by_size = profile.width > 0;
             bool match = by_size ? profiled_ == nullptr && profile.width == w_ && profile.height == h_
@@ -296,6 +298,7 @@ class Brain {
             eat_threat_ = profile.eat_threat >= 0 ? profile.eat_threat : eat_threat_;
             contest_ = profile.contest >= 0 ? profile.contest : contest_;
             rooms_ = profile.rooms > 0 ? profile.rooms : 0;
+            feed_max_pct_ = profile.feed_max >= 0 ? profile.feed_max : feed_max_pct_;
         }
     }
 
@@ -447,7 +450,7 @@ class Brain {
     }
 
     bool small_feeder(int king_len) const {
-        return tuning::FEED_MAX_PCT <= 0 || len_ * 100 <= king_len * tuning::FEED_MAX_PCT;
+        return feed_max_pct_ <= 0 || len_ * 100 <= king_len * feed_max_pct_;
     }
 
     bool ally_head_seen(int id) const {
