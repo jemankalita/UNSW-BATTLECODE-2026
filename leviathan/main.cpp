@@ -99,6 +99,10 @@ class Brain {
             return;
         }
         std::vector<Plan> plans = walks(1);
+        if (tuning::FREE_MULTI != 0 && logic::free_steps(len_) >= 2) {
+            std::vector<Plan> doubles = walks(2);
+            plans.insert(plans.end(), doubles.begin(), doubles.end());
+        }
         for (Plan& plan : plans) {
             judge(plan);
         }
@@ -188,6 +192,7 @@ class Brain {
     king::Tracker king_;
     int feed_target_ = -1;        // king's head while we walk over to feed it
     int feed_id_ = -1;            // the dragon we feed when it is one we can see (LOCAL_FEED)
+    int feed_round_now_ = 1 << 30;  // this map's feeding round, set by follow_king
     int gather_ = -1;             // king's tile while we gather to feed it (KING_PULL)
     // Knobs the map profile may override; see tuning::MAP_PROFILES.
     mapdb::Known const* profiled_ = nullptr;
@@ -200,6 +205,7 @@ class Brain {
     int bored_after_ = tuning::BORED_AFTER;
     bool dive_ = true;            // profile: dead-end nook dives allowed
     int eat_threat_ = tuning::EAT_THREAT;
+    int feed_max_pct_ = tuning::FEED_MAX_PCT;
     int contest_ = tuning::ENEMY_CONTEST;
     int rooms_ = 0;               // room-farmer pull, tenths of a pearl per step (0: off)
     int feed_floor_ = -1;         // team size feeding may not go below, set when it starts
@@ -275,6 +281,7 @@ class Brain {
         eat_threat_ = tuning::EAT_THREAT;
         contest_ = tuning::ENEMY_CONTEST;
         rooms_ = 0;
+        feed_max_pct_ = tuning::FEED_MAX_PCT;
         for (tuning::MapProfile const& profile : tuning::MAP_PROFILES) {
             bool by_size = profile.width > 0;
             bool match = by_size ? profiled_ == nullptr && profile.width == w_ && profile.height == h_
@@ -292,6 +299,7 @@ class Brain {
             eat_threat_ = profile.eat_threat >= 0 ? profile.eat_threat : eat_threat_;
             contest_ = profile.contest >= 0 ? profile.contest : contest_;
             rooms_ = profile.rooms > 0 ? profile.rooms : 0;
+            feed_max_pct_ = profile.feed_max >= 0 ? profile.feed_max : feed_max_pct_;
         }
     }
 
@@ -326,6 +334,7 @@ class Brain {
         gather_ = -1;
         bool small_map = w_ * h_ < tuning::FEED_CAP_TILES;
         int feed_round = feed_round_ >= 0 ? feed_round_ : small_map ? tuning::FEED_ROUND_SMALL : tuning::FEED_ROUND;
+        feed_round_now_ = feed_round;
         if (round_ >= feed_round && feed_floor_ < 0) {
             int share = small_map ? tuning::FEED_SHARE : 0;
             feed_floor_ = logic::feed_floor(units_, tuning::FEED_KEEP, share);
@@ -443,7 +452,7 @@ class Brain {
     }
 
     bool small_feeder(int king_len) const {
-        return tuning::FEED_MAX_PCT <= 0 || len_ * 100 <= king_len * tuning::FEED_MAX_PCT;
+        return feed_max_pct_ <= 0 || len_ * 100 <= king_len * feed_max_pct_;
     }
 
     bool ally_head_seen(int id) const {
@@ -828,19 +837,26 @@ class Brain {
         plan.lasts = lives ? SURVIVE_DEPTH : deepest_;
         // We cannot see through a portal. A far tile we saw a dragon on
         // lately may still hold one, so that crossing is a last resort.
-        plan.safe = plan.room >= need + pearls && lives && !plan.portal_blind;
+        plan.safe = plan.room >= need + pearls + (queen() ? tuning::QUEEN_ROOM : 0) && lives && !plan.portal_blind;
         // A long dragon is what wins the round-500 tiebreak, and a short enemy
         // gladly trades itself for it: on the ladder a length-3 dragon rammed
         // our length-21 king at round 492 and turned a won game into a loss.
         // Ending a step from an enemy head is a last resort. Only a step: a
         // berth that also shuns sprint reach makes the champion too timid to
         // hold ground (the loong series measured a wider berth as a loss).
+        // Our own dragons kill the queen too (v29 ladder: an ally's head met
+        // hers): she keeps a step from every head, and allies from hers.
+        if (tuning::QUEEN_RULES != 0 && tuning::QUEEN_CLASH != 0 && queen_clash(plan.cells.back())) {
+            plan.safe = false;
+        }
         if ((len_ >= tuning::KING_GUARD_LEN || queen()) && near_[static_cast<std::size_t>(plan.cells.back())] != 0) {
             plan.safe = false;
         }
         int end = plan.cells.back();
-        long long score = value_from(body, plan.length, steps > 1 ? SPRINT_VALUE_DEPTH : VALUE_DEPTH) -
-                          static_cast<long long>(steps - 1) * PEARL;
+        bool free_walk = tuning::FREE_MULTI != 0 && steps > 1 && logic::sprint_cost(len_, steps) == 0;
+        int paid = tuning::FREE_MULTI != 0 ? logic::sprint_cost(len_, steps) : steps - 1;
+        long long score = value_from(body, plan.length, steps > 1 && !free_walk ? SPRINT_VALUE_DEPTH : VALUE_DEPTH) -
+                          static_cast<long long>(paid) * PEARL;
         for (std::size_t i = 0; i + 1 < plan.cells.size(); ++i) {
             if (pearl_now(plan.cells[i])) {
                 score += PEARL;
@@ -854,13 +870,16 @@ class Brain {
             // risk: the teams above us collect 2-5x our corpse pearls.
             threat_share = threat_share * eat_threat_ / 100;
         }
+        if (queen()) {
+            threat_share = std::max(threat_share, 100) * tuning::QUEEN_THREAT / 100;
+        }
         score -= static_cast<long long>(threat_[static_cast<std::size_t>(end)]) * THREAT_SCALE * threat_share / 100;
         score += static_cast<long long>(std::min(plan.room, need * 2 + 8)) * ROOM_STEP;
         if (plan.dirs.front() == facing_) {
             score += STRAIGHT;
         }
         if (!hold) {
-            score -= crowding(end) * tuning::CROWD_PCT / 100;
+            score -= crowding(end) * tuning::CROWD_PCT / 100 * (queen() ? tuning::QUEEN_CROWD : 100) / 100;
         }
         score += rich_pull(end);
         score += room_pull(end);
@@ -1225,6 +1244,23 @@ class Brain {
         return tuning::QUEEN_RULES != 0 && logic::is_queen(id_);
     }
 
+    // Ending on 'cell' puts our queen's head beside another head (or onto it).
+    bool queen_clash(int cell) const {
+        for (Other const& other : others_) {
+            if (other.enemy) {
+                continue;
+            }
+            bool other_queen = logic::is_queen(other.id);
+            if (!queen() && !other_queen) {
+                continue;
+            }
+            if (logic::manhattan(cx(cell), cy(cell), other.x, other.y, w_, h_) <= 1) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // The enemy queen's head if it is in view, else -1.
     int enemy_queen() const {
         if (tuning::QUEEN_RULES == 0) {
@@ -1246,7 +1282,9 @@ class Brain {
                 return q;
             }
         }
-        if (tuning::HUNT_ROUND <= 0 || round_ < tuning::HUNT_ROUND || units_ <= 1) {
+        bool idle_hunter = tuning::HUNT_IDLE != 0 && round_ >= feed_round_now_ && feed_target_ < 0;
+        bool timed_hunter = tuning::HUNT_ROUND > 0 && round_ >= tuning::HUNT_ROUND;
+        if ((!idle_hunter && !timed_hunter) || units_ <= 1) {
             return -1;
         }
         king::Report const& crown = king_.best();
@@ -1728,6 +1766,9 @@ class Brain {
         if (!logic::want_split(len_, units_, cap, round_, tuning::SPLIT_LEN, tuning::SPLIT_LAST_ROUND)) {
             return false;
         }
+        if (queen() && tuning::QUEEN_SPLIT == 0) {
+            return false;
+        }
         if (!ct.can_split(tuning::CHILD_SIZE) || (!tuning::SPLIT_UNDER_THREAT && threat_[static_cast<std::size_t>(head_)] > 0)) {
             return false;
         }
@@ -1779,7 +1820,7 @@ class Brain {
     // Schooltime), where a long body cannot turn in one-wide water.
     bool reverse(unswbc::Controller& ct) {
         bool enabled = (tuning::REVERSE_LEN > 0 && len_ >= tuning::REVERSE_LEN) || harvester();
-        if (!enabled || !ct.can_split(len_ - 2)) {
+        if (!enabled || queen() || !ct.can_split(len_ - 2)) {
             return false;
         }
         bool tail_known = static_cast<int>(body_.size()) >= len_;
