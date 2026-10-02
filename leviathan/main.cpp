@@ -192,6 +192,7 @@ class Brain {
     king::Tracker king_;
     int feed_target_ = -1;        // king's head while we walk over to feed it
     int feed_id_ = -1;            // the dragon we feed when it is one we can see (LOCAL_FEED)
+    int feed_round_now_ = 1 << 30;  // this map's feeding round, set by follow_king
     int gather_ = -1;             // king's tile while we gather to feed it (KING_PULL)
     // Knobs the map profile may override; see tuning::MAP_PROFILES.
     mapdb::Known const* profiled_ = nullptr;
@@ -333,6 +334,7 @@ class Brain {
         gather_ = -1;
         bool small_map = w_ * h_ < tuning::FEED_CAP_TILES;
         int feed_round = feed_round_ >= 0 ? feed_round_ : small_map ? tuning::FEED_ROUND_SMALL : tuning::FEED_ROUND;
+        feed_round_now_ = feed_round;
         if (round_ >= feed_round && feed_floor_ < 0) {
             int share = small_map ? tuning::FEED_SHARE : 0;
             feed_floor_ = logic::feed_floor(units_, tuning::FEED_KEEP, share);
@@ -1280,7 +1282,9 @@ class Brain {
                 return q;
             }
         }
-        if (tuning::HUNT_ROUND <= 0 || round_ < tuning::HUNT_ROUND || units_ <= 1) {
+        bool idle_hunter = tuning::HUNT_IDLE != 0 && round_ >= feed_round_now_ && feed_target_ < 0;
+        bool timed_hunter = tuning::HUNT_ROUND > 0 && round_ >= tuning::HUNT_ROUND;
+        if ((!idle_hunter && !timed_hunter) || units_ <= 1) {
             return -1;
         }
         king::Report const& crown = king_.best();

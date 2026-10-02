@@ -96,6 +96,10 @@ static constexpr int IMITATE_CALM = 0;
 // king meanwhile; the ram itself is the usual worth_ram (a head-on kills
 // both, and the round-500 tiebreak is the longest dragon).
 static constexpr int HUNT_ROUND = 0;
+// 1: from the feeding round, a dragon that is not feeding (too far from the
+// king to reach it in time) hunts instead, as calc (#1) does: its idle
+// dragons ram the enemy's longest.
+static constexpr int HUNT_IDLE = 1;  // vs v31: pool 40-40, unseen 20-20 (control 40-40): neutral, on at user request
 // Slay Queen rules (1: on): our queen (id 0 or 1) is the king, never rams
 // unless cornered and keeps a step from enemy heads; any other dragon rams
 // the enemy queen when it can and walks at her (QUEEN_HUNT_PULL tenths of a
@@ -316,7 +320,7 @@ static constexpr MapProfile MAP_PROFILES[] = {
     // nook deaths a game vs 16). Contest 100 (enemy-closer pearls keep full
     // value) beat v27 46-34 and v24 43-37 but lost to v22 29-51 (v27: 43-37),
     // net 118-122 over three opponents: left off.
-    {"Queen Of Spades", 0, 0, 1, -1, -1, -1, -1, -1, 0},
+    {"Queen Of Spades", 0, 0, 1, -1, -1, -1, -1, -1, 0, -1, -1, -1, 35},  // feed cap 35: 67-61 vs control 57-70 (128 games)
     // Trauma (v30 ladder 1-6, all round-500): long dragons (8-14) die feeding
     // and our longest ends shorter than at round 400 (13 -> 2, 12 -> 7) while
     // theirs reaches 21-41. Only dragons at most FEED_MAX_TRAUMA percent of
