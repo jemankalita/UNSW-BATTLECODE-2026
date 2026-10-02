@@ -154,7 +154,7 @@ static constexpr int ONE_WAY_INTO_CENTRE = 1;
 // pulling Trophy's dragons into its contested centre lost 1/8 vs 5/8.
 static constexpr int RICH_NEAR = 3;
 // ... each step closer is worth this many tenths of a pearl.
-static constexpr int RICH_PULL = 5;
+static constexpr int RICH_PULL = 6;  // tuner v36: 141-99 vs v35 (240 games)
 // A baked region of at least 40 tiles whose tiles spawn at least this many
 // pearls per 1000 rounds in total is a field: dragons in a starving region
 // head for it as they would for a fast tile (0: fast tiles only). Trauma's
