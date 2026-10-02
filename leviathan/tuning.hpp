@@ -10,7 +10,7 @@ namespace tuning {
 static constexpr int USE_BAKED_MAPS = 1;
 
 // Discount per step of distance when summing the pull of pearls, in percent.
-static constexpr int GAMMA = 74;  // tuner v33: with TRICKLE_RANGE 4 + KING_HOLD 315, 139-101 vs v32 (240 games)
+static constexpr int GAMMA = 71;  // tuner v35: 141-99 vs v33 (240 games); v33 had 74
 // Chance, in percent, that a tile we have never seen holds a pearl.
 static constexpr int FOG_PRIOR = 4;
 // On a baked map: chance, in percent, that a pearl on a tile we cannot see
