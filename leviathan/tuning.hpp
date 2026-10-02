@@ -10,7 +10,7 @@ namespace tuning {
 static constexpr int USE_BAKED_MAPS = 1;
 
 // Discount per step of distance when summing the pull of pearls, in percent.
-static constexpr int GAMMA = 80;
+static constexpr int GAMMA = 71;  // tuner v35: 141-99 vs v33 (240 games); v33 had 74
 // Chance, in percent, that a tile we have never seen holds a pearl.
 static constexpr int FOG_PRIOR = 4;
 // On a baked map: chance, in percent, that a pearl on a tile we cannot see
@@ -96,12 +96,34 @@ static constexpr int IMITATE_CALM = 0;
 // king meanwhile; the ram itself is the usual worth_ram (a head-on kills
 // both, and the round-500 tiebreak is the longest dragon).
 static constexpr int HUNT_ROUND = 0;
+// 1: from the feeding round, a dragon that is not feeding (too far from the
+// king to reach it in time) hunts instead, as calc (#1) does: its idle
+// dragons ram the enemy's longest.
+static constexpr int HUNT_IDLE = 1;  // vs v31: pool 40-40, unseen 20-20 (control 40-40): neutral, on at user request
 // Slay Queen rules (1: on): our queen (id 0 or 1) is the king, never rams
 // unless cornered and keeps a step from enemy heads; any other dragon rams
 // the enemy queen when it can and walks at her (QUEEN_HUNT_PULL tenths of a
 // pearl per step) when she is in view.
 static constexpr int QUEEN_RULES = 1;
 static constexpr int QUEEN_HUNT_PULL = 30;
+// Free multi-steps (0: off): a dragon of length L moves ceil(L/4) steps a
+// turn for free (Slay Queen update). With this on, a dragon of 5+ also weighs
+// its free 2-step walks every turn, valued like single steps, and any sprint
+// pays only for the steps past the free ones. Post-reset ladder replays: the
+// top teams and we use multi-steps in 0.1% of moves.
+static constexpr int FREE_MULTI = 1;  // vs v29: 106-94 (pool+unseen, 200 games), vs v22 21-19 (v29 17-23)
+// v29 ladder: our queen died in 100 of 104 games, half by round 33, nearly
+// all at length 2-4: she budded farmers from round 0 like any dragon. Now she
+// only splits when cornered (never buds, never reverses), counts enemy ram
+// threat at QUEEN_THREAT percent, crowding at QUEEN_CROWD percent, and needs
+// QUEEN_ROOM more free tiles than an ordinary step to call it safe.
+static constexpr int QUEEN_SPLIT = 1;  // 0 (+threat/crowd 300, room 8): q30 14-26 vs v29
+static constexpr int QUEEN_THREAT = 100;
+static constexpr int QUEEN_CROWD = 100;
+static constexpr int QUEEN_ROOM = 0;
+// 1: the queen keeps a step from every head and allies from hers (a v29
+// ladder queen died head-on with an ally). q31 19-23, q31n 14-28 vs v29.
+static constexpr int QUEEN_CLASH = 0;
 static constexpr int HUNT_MIN_LEN = 8;
 static constexpr int HUNT_PULL = 20;
 // Anti-camping: after BORED_AFTER rounds without eating, ending a move on a
@@ -132,7 +154,7 @@ static constexpr int ONE_WAY_INTO_CENTRE = 1;
 // pulling Trophy's dragons into its contested centre lost 1/8 vs 5/8.
 static constexpr int RICH_NEAR = 3;
 // ... each step closer is worth this many tenths of a pearl.
-static constexpr int RICH_PULL = 5;
+static constexpr int RICH_PULL = 6;  // tuner v36: 141-99 vs v35 (240 games)
 // A baked region of at least 40 tiles whose tiles spawn at least this many
 // pearls per 1000 rounds in total is a field: dragons in a starving region
 // head for it as they would for a fast tile (0: fast tiles only). Trauma's
@@ -199,7 +221,7 @@ static constexpr int DIVE_CHILD = 2;
 // From this round the dragon that believes it is the king stops splitting,
 // so it enters the feeding with a head start: it eats at most one pearl a
 // round, and the tiebreak is the longest single dragon.
-static constexpr int KING_HOLD_ROUND = 300;
+static constexpr int KING_HOLD_ROUND = 315;
 // Feeding only on maps at least this many tiles (0: every map).
 static constexpr int FEED_MIN_TILES = 0;
 // From this round the team feeds its king (0 turns feeding off) ...
@@ -229,7 +251,7 @@ static constexpr int GROWER_KEEP_EVERY = 30;
 // and 3 longer than itself, feeds it while the team keeps more than
 // TRICKLE_KEEP dragons.
 static constexpr int TRICKLE_ROUND = 250;  // top-10 kings eat 17 own-corpse pearls in r250-400 (ours 10); 333-307 vs 327-313 baseline over 640 games
-static constexpr int TRICKLE_RANGE = 3;
+static constexpr int TRICKLE_RANGE = 4;
 static constexpr int TRICKLE_KING_MIN = 5;
 static constexpr int TRICKLE_KEEP = 8;
 // A dragon feeds only while it is at most this percent of the king's length
@@ -237,6 +259,8 @@ static constexpr int TRICKLE_KEEP = 8;
 // games; a feeder drops half its length and the king eats about a quarter
 // of that, so a 12-long feeder buys the king ~1.5 and loses the backup.
 static constexpr int FEED_MAX_PCT = 0;  // 50: 79-81 vs v28 83-77 (Schooltime 5/16 vs 9/16); FEED_KEEP 8 76-84, 6 82-78; KING_HOLD 250 68-92
+// Trauma's feed cap (MapProfile::feed_max; -1: off).
+static constexpr int FEED_MAX_TRAUMA = 35;  // Trauma 74-54 vs control 56-72 (vs v30 + v22, 128 games); 50: 34-30
 // King gathering (0: off): from KING_PULL_LEAD rounds before the feeding,
 // every dragon that will feed walks toward the king it knows, KING_PULL/10
 // pearls per step of distance closed, so its pearls drop where the king eats
@@ -275,6 +299,7 @@ struct MapProfile {
     int eat_threat = -1;  // replaces EAT_THREAT: percent of ram risk counted on a step that eats
     int contest = -1;     // replaces ENEMY_CONTEST: percent of a pearl's value left when an enemy is closer
     int rooms = -1;       // > 0: room farmers, pulled into small portal rooms at this many tenths of a pearl per step
+    int feed_max = -1;    // replaces FEED_MAX_PCT: a feeder at most this percent of the king's length
 };
 // Room farmers (MapProfile::rooms): one dragon in ROOM_SHARE (by id / 2)
 // within ROOM_REACH steps of a small portal room is pulled in until
@@ -295,7 +320,12 @@ static constexpr MapProfile MAP_PROFILES[] = {
     // nook deaths a game vs 16). Contest 100 (enemy-closer pearls keep full
     // value) beat v27 46-34 and v24 43-37 but lost to v22 29-51 (v27: 43-37),
     // net 118-122 over three opponents: left off.
-    {"Queen Of Spades", 0, 0, 1, -1, -1, -1, -1, -1, 0},
+    {"Queen Of Spades", 0, 0, 1, -1, -1, -1, -1, -1, 0, -1, -1, -1, 35},  // feed cap 35: 67-61 vs control 57-70 (128 games)
+    // Trauma (v30 ladder 1-6, all round-500): long dragons (8-14) die feeding
+    // and our longest ends shorter than at round 400 (13 -> 2, 12 -> 7) while
+    // theirs reaches 21-41. Only dragons at most FEED_MAX_TRAUMA percent of
+    // the king's length feed there.
+    {"Trauma", 0, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, FEED_MAX_TRAUMA},
     // Trauma: ladder losses were all round-500 tiebreaks: ahead on total at
     // round 400 (80 vs 56) but our king 5.5 long vs 10.4, and feeding it then
     // burned ~50 length for +7. King hold 200 went 13-11, 17-7, 17-7 (vs
