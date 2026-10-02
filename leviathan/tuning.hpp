@@ -255,6 +255,8 @@ static constexpr int TRICKLE_KEEP = 8;
 // games; a feeder drops half its length and the king eats about a quarter
 // of that, so a 12-long feeder buys the king ~1.5 and loses the backup.
 static constexpr int FEED_MAX_PCT = 0;  // 50: 79-81 vs v28 83-77 (Schooltime 5/16 vs 9/16); FEED_KEEP 8 76-84, 6 82-78; KING_HOLD 250 68-92
+// Trauma's feed cap (MapProfile::feed_max; -1: off).
+static constexpr int FEED_MAX_TRAUMA = 35;  // Trauma 74-54 vs control 56-72 (vs v30 + v22, 128 games); 50: 34-30
 // King gathering (0: off): from KING_PULL_LEAD rounds before the feeding,
 // every dragon that will feed walks toward the king it knows, KING_PULL/10
 // pearls per step of distance closed, so its pearls drop where the king eats
@@ -293,6 +295,7 @@ struct MapProfile {
     int eat_threat = -1;  // replaces EAT_THREAT: percent of ram risk counted on a step that eats
     int contest = -1;     // replaces ENEMY_CONTEST: percent of a pearl's value left when an enemy is closer
     int rooms = -1;       // > 0: room farmers, pulled into small portal rooms at this many tenths of a pearl per step
+    int feed_max = -1;    // replaces FEED_MAX_PCT: a feeder at most this percent of the king's length
 };
 // Room farmers (MapProfile::rooms): one dragon in ROOM_SHARE (by id / 2)
 // within ROOM_REACH steps of a small portal room is pulled in until
@@ -314,6 +317,11 @@ static constexpr MapProfile MAP_PROFILES[] = {
     // value) beat v27 46-34 and v24 43-37 but lost to v22 29-51 (v27: 43-37),
     // net 118-122 over three opponents: left off.
     {"Queen Of Spades", 0, 0, 1, -1, -1, -1, -1, -1, 0},
+    // Trauma (v30 ladder 1-6, all round-500): long dragons (8-14) die feeding
+    // and our longest ends shorter than at round 400 (13 -> 2, 12 -> 7) while
+    // theirs reaches 21-41. Only dragons at most FEED_MAX_TRAUMA percent of
+    // the king's length feed there.
+    {"Trauma", 0, 0, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, FEED_MAX_TRAUMA},
     // Trauma: ladder losses were all round-500 tiebreaks: ahead on total at
     // round 400 (80 vs 56) but our king 5.5 long vs 10.4, and feeding it then
     // burned ~50 length for +7. King hold 200 went 13-11, 17-7, 17-7 (vs
