@@ -65,7 +65,7 @@ static constexpr int HARVEST_KEEP = 0;
 // Percent of the crowding cost (ally heads and bodies near the step's end).
 // Top-10 teams have an ally head within 2 on 22-38% of their turns on
 // Autarky/Trophy/Portals, we on 5-21%, and they eat from more tiles.
-static constexpr int CROWD_PCT = 100;
+static constexpr int CROWD_PCT = 115;  // tuner v34: with RAM_MARGIN 1, 141-99 vs v33 (240 games)
 // Rich-tile sharing (0: off): on odd rounds a dragon sends a tile it knows
 // spawns fast (seen itself or heard from an ally) instead of the KING news,
 // so the whole swarm learns where the fountains are. The top teams sit on
@@ -135,7 +135,7 @@ static constexpr int BORED_PENALTY = 5;
 // A dragon rams an enemy head at least this much longer (both die). 0 trades
 // evenly: the top-20 teams win by attrition, 30 head-on trades a game in the
 // first 200 rounds, most of them started by the winner.
-static constexpr int RAM_MARGIN = 0;
+static constexpr int RAM_MARGIN = 1;
 // Percent of a tile's pearl we still count when an enemy head is closer.
 static constexpr int ENEMY_CONTEST = 80;
 // Worth, in tenths of a pearl, of stepping through a portal whose far end
