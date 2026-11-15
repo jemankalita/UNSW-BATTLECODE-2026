@@ -10,7 +10,7 @@ namespace tuning {
 static constexpr int USE_BAKED_MAPS = 1;
 
 // Discount per step of distance when summing the pull of pearls, in percent.
-static constexpr int GAMMA = 80;
+static constexpr int GAMMA = 74;  // tuner v33: with TRICKLE_RANGE 4 + KING_HOLD 315, 139-101 vs v32 (240 games)
 // Chance, in percent, that a tile we have never seen holds a pearl.
 static constexpr int FOG_PRIOR = 4;
 // On a baked map: chance, in percent, that a pearl on a tile we cannot see
@@ -221,7 +221,7 @@ static constexpr int DIVE_CHILD = 2;
 // From this round the dragon that believes it is the king stops splitting,
 // so it enters the feeding with a head start: it eats at most one pearl a
 // round, and the tiebreak is the longest single dragon.
-static constexpr int KING_HOLD_ROUND = 300;
+static constexpr int KING_HOLD_ROUND = 315;
 // Feeding only on maps at least this many tiles (0: every map).
 static constexpr int FEED_MIN_TILES = 0;
 // From this round the team feeds its king (0 turns feeding off) ...
@@ -251,7 +251,7 @@ static constexpr int GROWER_KEEP_EVERY = 30;
 // and 3 longer than itself, feeds it while the team keeps more than
 // TRICKLE_KEEP dragons.
 static constexpr int TRICKLE_ROUND = 250;  // top-10 kings eat 17 own-corpse pearls in r250-400 (ours 10); 333-307 vs 327-313 baseline over 640 games
-static constexpr int TRICKLE_RANGE = 3;
+static constexpr int TRICKLE_RANGE = 4;
 static constexpr int TRICKLE_KING_MIN = 5;
 static constexpr int TRICKLE_KEEP = 8;
 // A dragon feeds only while it is at most this percent of the king's length
